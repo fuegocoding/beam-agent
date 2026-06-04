@@ -128,19 +128,28 @@ updated: {datetime.now().isoformat()}
         if graph.get("traits"):
             lines.append("## Personality Traits")
             for t in graph["traits"]:
-                lines.append(f"- **{t['name']}** (strength: {t.get('strength', 0.5):.0%}): {t.get('summary', '')}")
+                if isinstance(t, dict):
+                    lines.append(f"- **{t.get('name', '?')}** (strength: {t.get('strength', 0.5):.0%}): {t.get('summary', '')}")
+                else:
+                    lines.append(f"- {t}")
             lines.append("")
 
         if graph.get("beliefs"):
             lines.append("## Beliefs")
             for b in graph["beliefs"]:
-                lines.append(f"- **{b['name']}** (confidence: {b.get('confidence', 0.5):.0%}): {b.get('summary', '')}")
+                if isinstance(b, dict):
+                    lines.append(f"- **{b.get('name', '?')}** (confidence: {b.get('confidence', 0.5):.0%}): {b.get('summary', '')}")
+                else:
+                    lines.append(f"- {b}")
             lines.append("")
 
         if graph.get("values"):
             lines.append("## Core Values")
             for v in graph["values"]:
-                lines.append(f"- **{v['name']}** (importance: {v.get('importance', 0.5):.0%}): {v.get('summary', '')}")
+                if isinstance(v, dict):
+                    lines.append(f"- **{v.get('name', '?')}** (importance: {v.get('importance', 0.5):.0%}): {v.get('summary', '')}")
+                else:
+                    lines.append(f"- {v}")
             lines.append("")
 
         summary_file.write_text("\n".join(lines), encoding="utf-8")
