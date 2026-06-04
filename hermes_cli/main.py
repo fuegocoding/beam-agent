@@ -1,46 +1,31 @@
 #!/usr/bin/env python3
 """
-Hermes CLI - Main entry point.
+Beam Agent CLI - Main entry point.
 
 Usage:
-    hermes                     # Interactive chat (default)
-    hermes chat                # Interactive chat
-    hermes gateway             # Run gateway in foreground
-    hermes gateway start       # Start gateway as service
-    hermes gateway stop        # Stop gateway service
-    hermes gateway status      # Show gateway status
-    hermes gateway install     # Install gateway service
-    hermes gateway uninstall   # Uninstall gateway service
-    hermes setup               # Interactive setup wizard
-    hermes logout              # Clear stored authentication
-    hermes status              # Show status of all components
-    hermes cron                # Manage cron jobs
-    hermes cron list           # List cron jobs
-    hermes cron status         # Check if cron scheduler is running
-    hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
-    hermes honcho status                   # Show Honcho config and connection status
-    hermes honcho sessions                 # List directory → session name mappings
-    hermes honcho map <name>               # Map current directory to a session name
-    hermes honcho peer                     # Show peer names and dialectic settings
-    hermes honcho peer --user NAME         # Set user peer name
-    hermes honcho peer --ai NAME           # Set AI peer name
-    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    hermes honcho mode                     # Show current memory mode
-    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
-    hermes honcho tokens                   # Show token budget settings
-    hermes honcho tokens --context N       # Set session.context() token cap
-    hermes honcho tokens --dialectic N     # Set dialectic result char cap
-    hermes honcho identity                 # Show AI peer identity representation
-    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
-    hermes version             Show version
-    hermes update              Update to latest version
-    hermes uninstall           Uninstall Hermes Agent
-    hermes acp                 Run as an ACP server for editor integration
-    hermes sessions browse     Interactive session picker with search
-
-    hermes claw migrate --dry-run  # Preview migration without changes
+    beam                       # Interactive chat (default)
+    beam chat                  # Interactive chat
+    beam gateway               # Run gateway in foreground
+    beam gateway start         # Start gateway as service
+    beam gateway stop          # Stop gateway service
+    beam gateway status        # Show gateway status
+    beam gateway install       # Install gateway service
+    beam gateway uninstall     # Uninstall gateway service
+    beam setup                 # Interactive setup wizard
+    beam logout                # Clear stored authentication
+    beam status                # Show status of all components
+    beam cron                  # Manage cron jobs
+    beam cron list             # List cron jobs
+    beam cron status           # Check if cron scheduler is running
+    beam doctor                # Check configuration and dependencies
+    beam brain status          # Show brain status
+    beam brain export          # Export brain to SOUL.md
+    beam interview             # Start adaptive interview
+    beam version               Show version
+    beam update                Update to latest version
+    beam uninstall             Uninstall Beam Agent
+    beam acp                   Run as an ACP server for editor integration
+    beam sessions browse       Interactive session picker with search
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — it sets up
@@ -66,7 +51,7 @@ import sys
 
 
 def _set_process_title() -> None:
-    """Set the process title to 'hermes' so tools like 'ps', 'top', and
+    """Set the process title to 'beam' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
 
     Purely cosmetic — non-fatal on any platform.
@@ -83,7 +68,7 @@ def _set_process_title() -> None:
     try:
         import setproctitle  # type: ignore[import-untyped]
 
-        setproctitle.setproctitle("hermes")
+        setproctitle.setproctitle("beam")
         return
     except ImportError:
         pass
@@ -96,7 +81,7 @@ def _set_process_title() -> None:
         system = platform.system()
         if system == "Linux":
             libc = ctypes.CDLL("libc.so.6", use_errno=True)
-            libc.prctl(15, b"hermes", 0, 0, 0)  # PR_SET_NAME = 15
+            libc.prctl(15, b"beam", 0, 0, 0)  # PR_SET_NAME = 15
         elif system == "Darwin":
             libc = ctypes.CDLL("libc.dylib", use_errno=True)
             libc.pthread_setname_np(b"hermes")
