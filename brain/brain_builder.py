@@ -9,34 +9,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_PROMPT = """You are a personality analyst. Given a transcript of a deep interview, extract a structured personality graph.
+EXTRACTION_PROMPT = """You are a personality analyst. Extract a structured personality graph from this interview transcript.
 
-Be thorough — extract EVERY trait, belief, value, boundary, event, and person mentioned. Use the person's own words where possible.
+OUTPUT FORMAT — follow this EXACTLY. Every field is required. Use empty arrays [] for missing data.
 
-Output ONLY valid JSON with this exact structure (no markdown fences, no explanation):
 {
-  "user_summary": "2-3 sentence summary of who this person is",
+  "user_summary": "2-3 sentence summary of who this person is, in first person",
   "traits": [
-    {"name": "trait name", "strength": 0.0-1.0, "summary": "one sentence"}
+    {"name": "trait name", "strength": 0.0 to 1.0, "summary": "one sentence"}
   ],
   "beliefs": [
-    {"name": "belief name", "confidence": 0.0-1.0, "summary": "one sentence"}
+    {"name": "belief name", "confidence": 0.0 to 1.0, "summary": "one sentence"}
   ],
   "values": [
-    {"name": "value name", "importance": 0.0-1.0, "summary": "one sentence"}
+    {"name": "value name", "importance": 0.0 to 1.0, "summary": "one sentence"}
   ],
-  "boundaries": [
-    {"topic": "topic", "comfort_level": 0.0-1.0, "summary": "one sentence"}
-  ],
-  "life_events": [
-    {"event": "what happened", "year": "approximate year or period", "impact": "how it shaped them", "summary": "one sentence"}
-  ],
+  "boundaries": [],
+  "life_events": [],
   "people": [
-    {"name": "name or relation", "relationship": "how they relate", "significance": "why they matter"}
+    {"name": "name", "relationship": "how they relate", "significance": "why they matter"}
   ],
   "voice_dna": {
-    "characteristic_phrases": ["phrase1", "phrase2"],
-    "phrases_to_avoid": ["phrase1"],
+    "characteristic_phrases": ["exact phrases they used"],
+    "phrases_to_avoid": [],
     "humor_style": "description",
     "response_length_pattern": "description",
     "formality_range": "description",
@@ -50,13 +45,23 @@ Output ONLY valid JSON with this exact structure (no markdown fences, no explana
     "documentation_habit": "how they document"
   },
   "emotional_profile": {
-    "triggers": [{"stimulus": "what triggers", "reaction": "how they react", "intensity": 0.0-1.0}],
+    "triggers": [{"stimulus": "what triggers", "reaction": "how they react", "intensity": 0.0 to 1.0}],
     "energy_sources": ["what gives energy"],
     "energy_drains": ["what drains energy"],
-    "reaction_speed": "fast/slow",
-    "recovery_pattern": "how they recover"
+    "reaction_speed": "fast/slow/variable",
+    "recovery_pattern": "how they recover from setbacks"
   }
-}"""
+}
+
+RULES:
+- traits: 3-8 personality traits with DIFFERENT names
+- beliefs: 3-8 core beliefs, NOT traits. Beliefs are opinions/convictions about the world.
+- values: 3-6 core values. Values are principles they live by.
+- voice_dna: extract from HOW they spoke, not WHAT they believe
+- emotional_profile: extract triggers, energy sources/drains from their answers
+- Use their exact words where possible
+- All arrays must contain objects with the specified fields
+- Do NOT nest data — keep it flat as shown above"""
 
 
 def _call_llm(system: str, user: str, temperature: float = 0.3, max_tokens: int = 8000) -> str:
@@ -85,16 +90,16 @@ def _parse_json(text: str) -> dict:
 
 
 def _normalize_graph(graph: dict) -> dict:
-    """Normalize LLM output to expected format.
+    """Normalize LLM output to expected format."""
 
-    Handles cases where LLM returns nested objects instead of flat arrays.
-    """
     # user_summary from various sources
     if not graph.get("user_summary"):
         for path in [
+            ("core_identity",),
+            ("core_identity", "description"),
+            ("identity", "core_description"),
             ("identity", "self_description"),
             ("identity", "description"),
-            ("core_identity", "description"),
             ("summary",),
         ]:
             val = graph
@@ -104,7 +109,7 @@ def _normalize_graph(graph: dict) -> dict:
                 graph["user_summary"] = val
                 break
 
-    # traits from identity/core_identity
+    # traits from values/identity arrays
     if not graph.get("traits"):
         traits = []
         for source_key in ["identity", "core_identity"]:
@@ -116,8 +121,6 @@ def _normalize_graph(graph: dict) -> dict:
                         for item in items:
                             if isinstance(item, str):
                                 traits.append({"name": item, "strength": 0.7, "summary": f"Core: {item}"})
-                            elif isinstance(item, dict):
-                                traits.append(item)
         if traits:
             graph["traits"] = traits
 
@@ -136,50 +139,79 @@ def _normalize_graph(graph: dict) -> dict:
         if values:
             graph["values"] = values
 
-    # emotional_profile from emotional_triggers or emotional_profile
+    # beliefs — handle string or list of strings
+    beliefs_raw = graph.get("beliefs", [])
+    if isinstance(beliefs_raw, str):
+        graph["beliefs"] = [{"name": beliefs_raw, "confidence": 0.8, "summary": beliefs_raw}]
+    elif isinstance(beliefs_raw, list):
+        normalized = []
+        for b in beliefs_raw:
+            if isinstance(b, str):
+                normalized.append({"name": b, "confidence": 0.8, "summary": b})
+            elif isinstance(b, dict):
+                normalized.append(b)
+        graph["beliefs"] = normalized
+
+    # emotional_profile from multiple possible sources
     if not graph.get("emotional_profile") or not graph.get("emotional_profile", {}).get("energy_sources"):
-        ep = graph.get("emotional_triggers", graph.get("emotional_profile", {}))
+        result = graph.setdefault("emotional_profile", {})
+        # Try emotional_triggers
+        ep = graph.get("emotional_triggers", {})
         if isinstance(ep, dict):
-            result = graph.setdefault("emotional_profile", {})
-            # drains
             drains = ep.get("drains", ep.get("energy_drains", []))
             if isinstance(drains, str):
                 drains = [drains]
-            if drains:
+            if drains and not result.get("energy_drains"):
                 result["energy_drains"] = drains
-            # recharges
             recharges = ep.get("recharges", ep.get("energy_sources", []))
-            if isinstance(recharges, list):
+            if isinstance(recharges, str):
+                recharges = [recharges]
+            if recharges and not result.get("energy_sources"):
                 result["energy_sources"] = recharges
-            # failure_coping -> recovery
-            if ep.get("failure_coping") and not result.get("recovery_pattern"):
-                result["recovery_pattern"] = ep["failure_coping"]
+        # Try interaction_patterns
+        ip = graph.get("interaction_patterns", {})
+        if isinstance(ip, dict) and not result.get("recovery_pattern"):
+            result["recovery_pattern"] = str(ip)
+        # Try personality_indicators as triggers
+        pi = graph.get("personality_indicators", {})
+        if isinstance(pi, dict) and not result.get("triggers"):
+            result["triggers"] = [{"stimulus": k, "reaction": v, "intensity": 0.5} for k, v in pi.items() if isinstance(v, str)]
 
-    # work_dna from work_style
+    # work_dna from work_style or work_approach
     if not graph.get("work_dna") or not graph.get("work_dna", {}).get("decomposition_style"):
-        ws = graph.get("work_style", {})
-        if ws:
-            wd = graph.setdefault("work_dna", {})
-            if ws.get("approach") and not wd.get("decomposition_style"):
-                wd["decomposition_style"] = ws["approach"]
-            if ws.get("delegation") and not wd.get("delegation_style"):
-                wd["delegation_style"] = ws["delegation"]
+        for ws_key in ["work_style", "work_approach"]:
+            ws = graph.get(ws_key, {})
+            if ws:
+                wd = graph.setdefault("work_dna", {})
+                if ws.get("approach") and not wd.get("decomposition_style"):
+                    wd["decomposition_style"] = ws["approach"]
+                if ws.get("general") and not wd.get("decomposition_style"):
+                    wd["decomposition_style"] = ws["general"]
+                if ws.get("delegation") and not wd.get("delegation_style"):
+                    wd["delegation_style"] = ws["delegation"]
+                if ws.get("delegation_framework") and not wd.get("delegation_style"):
+                    fw = ws["delegation_framework"]
+                    if isinstance(fw, dict):
+                        wd["delegation_style"] = f"Knowledge: {fw.get('knowledge_problems', '')}. Volume: {fw.get('volume_problems', '')}"
+                if ws.get("validation") and not wd.get("debugging_approach"):
+                    wd["debugging_approach"] = ws["validation"]
+                if ws.get("bug_fixing") and not wd.get("debugging_approach"):
+                    wd["debugging_approach"] = ws["bug_fixing"]
 
-    # people from relationships.key_influences
+    # people from relationships (handle nested significant_people array)
     if not graph.get("people"):
         people = []
         rels = graph.get("relationships", {})
         if isinstance(rels, dict):
-            for influencer in rels.get("key_influences", []):
-                if isinstance(influencer, dict):
-                    people.append({
-                        "name": influencer.get("role", "Unknown"),
-                        "relationship": influencer.get("role", ""),
-                        "significance": influencer.get("impact", ""),
-                    })
-            # Also flat relationships
+            # Handle significant_people array
+            for person in rels.get("significant_people", []):
+                if isinstance(person, dict):
+                    name = person.get("role", person.get("name", "Unknown"))
+                    significance = person.get("impact", person.get("description", person.get("lesson", "")))
+                    people.append({"name": name, "relationship": name, "significance": significance})
+            # Handle flat relationships
             for key, val in rels.items():
-                if key not in ("key_influences", "trust_approach") and isinstance(val, str):
+                if key not in ("significant_people", "key_influences", "trust_approach", "relationship_learning") and isinstance(val, str):
                     people.append({"name": key, "relationship": key, "significance": val})
         if people:
             graph["people"] = people
