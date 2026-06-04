@@ -6594,6 +6594,132 @@ def cmd_version(args):
     _print_version_info(check_updates=True)
 
 
+def cmd_brain(args):
+    """Manage your digital brain."""
+    action = getattr(args, "action", "status")
+
+    if action == "status":
+        try:
+            import json as _json
+            from tools.brain_tools import brain_status
+            result = brain_status()
+            data = _json.loads(result)
+            if data.get("status") == "empty":
+                print("No brain data found. Run 'beam interview' to build your brain.")
+            else:
+                print("Brain Status:")
+                print(f"  Total nodes: {data.get('total_nodes', 0)}")
+                coverage = data.get("coverage", {})
+                for key, val in coverage.items():
+                    print(f"  {key}: {val}")
+        except Exception as e:
+            print(f"Brain status error: {e}")
+
+    elif action == "export":
+        try:
+            import json as _json
+            from tools.brain_tools import brain_export
+            result = brain_export()
+            data = _json.loads(result)
+            if data.get("error"):
+                print(data["error"])
+            else:
+                print("Brain exported:")
+                for key, val in data.items():
+                    print(f"  {key}: {val}")
+        except Exception as e:
+            print(f"Brain export error: {e}")
+
+
+def cmd_interview(args):
+    """Start the adaptive brain-building interview."""
+    print("Starting brain interview...")
+    print("Answer each question naturally. The interview adapts to your responses.\n")
+
+    try:
+        from brain.interview_orchestrator import InterviewOrchestrator
+        orchestrator = InterviewOrchestrator()
+        result = orchestrator.start()
+
+        print(f"[{result['domain']}] {result['question']}\n")
+
+        while True:
+            try:
+                answer = input("Your answer: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nInterview interrupted. Progress saved.")
+                break
+
+            if not answer:
+                print("Please provide an answer, or Ctrl+C to exit.")
+                continue
+
+            if answer.lower() in ("quit", "exit", "done"):
+                print("Ending interview early.")
+                break
+
+            result = orchestrator.answer(
+                result.get("question_id", ""),
+                result.get("question", ""),
+                answer,
+                result.get("domain", ""),
+            )
+
+            if result.get("status") == "complete":
+                print(f"\n{result.get('summary', 'Interview complete!')}")
+                print("\nBuilding your brain...")
+
+                # Build brain
+                from brain.brain_builder import BrainBuilder
+                builder = BrainBuilder()
+                interview_data = orchestrator.get_full_transcript()
+                build_result = builder.extract(interview_data)
+
+                if build_result.get("error"):
+                    print(f"Brain build error: {build_result['error']}")
+                    return
+
+                graph = build_result.get("graph", {})
+
+                # Save graph
+                import json
+                from pathlib import Path
+                import os
+                beam_home = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
+                brain_dir = beam_home / "brain" / "default"
+                brain_dir.mkdir(parents=True, exist_ok=True)
+                graph_path = brain_dir / "personality_graph.json"
+                graph_path.write_text(json.dumps(graph, indent=2))
+
+                # Generate SOUL.md
+                from hermes_constants import get_hermes_home
+                hermes_home = get_hermes_home()
+                hermes_home.mkdir(parents=True, exist_ok=True)
+                try:
+                    from brain.soul_generator import generate_soul_md
+                    generate_soul_md(graph, hermes_home / "SOUL.md")
+                    print(f"SOUL.md generated at {hermes_home / 'SOUL.md'}")
+                except Exception as e:
+                    print(f"SOUL.md generation warning: {e}")
+
+                print(f"Brain saved to {graph_path}")
+                print(f"\nBrain built! Run 'beam brain status' to see coverage.")
+                break
+
+            # Show next question
+            action = result.get("action", "ask")
+            domain = result.get("domain", "")
+            question = result.get("question", "")
+            reason = result.get("reason", "")
+
+            if action == "followup" and reason:
+                print(f"  ({reason})")
+            print(f"\n[{domain}] {question}\n")
+
+    except Exception as e:
+        print(f"Interview error: {e}")
+
+
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
     _require_tty("uninstall")
@@ -12419,6 +12545,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
+        # Beam brain commands
+        "brain", "interview",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -15852,6 +15980,33 @@ Examples:
         help="Emit the breakdown as JSON",
     )
     prompt_size_parser.set_defaults(func=cmd_prompt_size)
+
+    # =========================================================================
+    # beam brain command
+    # =========================================================================
+    brain_parser = subparsers.add_parser(
+        "brain",
+        help="Manage your digital brain (status, export)",
+        description="View and export your personality graph",
+    )
+    brain_parser.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "export"],
+        help="Action to perform (default: status)",
+    )
+    brain_parser.set_defaults(func=cmd_brain)
+
+    # =========================================================================
+    # beam interview command
+    # =========================================================================
+    interview_parser = subparsers.add_parser(
+        "interview",
+        help="Start adaptive interview to build your digital brain",
+        description="Run a multi-pass personality interview",
+    )
+    interview_parser.set_defaults(func=cmd_interview)
 
     # =========================================================================
     # Parse and execute
