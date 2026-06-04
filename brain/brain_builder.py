@@ -84,8 +84,114 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _normalize_graph(graph: dict) -> dict:
+    """Normalize LLM output to expected format.
+
+    Handles cases where LLM returns nested objects instead of flat arrays.
+    """
+    # user_summary from various sources
+    if not graph.get("user_summary"):
+        for path in [
+            ("identity", "self_description"),
+            ("identity", "description"),
+            ("core_identity", "description"),
+            ("summary",),
+        ]:
+            val = graph
+            for key in path:
+                val = val.get(key, {}) if isinstance(val, dict) else {}
+            if isinstance(val, str) and val:
+                graph["user_summary"] = val
+                break
+
+    # traits from identity/core_identity
+    if not graph.get("traits"):
+        traits = []
+        for source_key in ["identity", "core_identity"]:
+            source = graph.get(source_key, {})
+            if isinstance(source, dict):
+                for list_key in ["core_values", "values", "traits"]:
+                    items = source.get(list_key, [])
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, str):
+                                traits.append({"name": item, "strength": 0.7, "summary": f"Core: {item}"})
+                            elif isinstance(item, dict):
+                                traits.append(item)
+        if traits:
+            graph["traits"] = traits
+
+    # values from various sources
+    if not graph.get("values"):
+        values = []
+        for source_key in ["identity", "core_identity"]:
+            source = graph.get(source_key, {})
+            if isinstance(source, dict):
+                for list_key in ["core_values", "values"]:
+                    items = source.get(list_key, [])
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, str):
+                                values.append({"name": item, "importance": 0.8, "summary": f"Value: {item}"})
+        if values:
+            graph["values"] = values
+
+    # emotional_profile from emotional_triggers or emotional_profile
+    if not graph.get("emotional_profile") or not graph.get("emotional_profile", {}).get("energy_sources"):
+        ep = graph.get("emotional_triggers", graph.get("emotional_profile", {}))
+        if isinstance(ep, dict):
+            result = graph.setdefault("emotional_profile", {})
+            # drains
+            drains = ep.get("drains", ep.get("energy_drains", []))
+            if isinstance(drains, str):
+                drains = [drains]
+            if drains:
+                result["energy_drains"] = drains
+            # recharges
+            recharges = ep.get("recharges", ep.get("energy_sources", []))
+            if isinstance(recharges, list):
+                result["energy_sources"] = recharges
+            # failure_coping -> recovery
+            if ep.get("failure_coping") and not result.get("recovery_pattern"):
+                result["recovery_pattern"] = ep["failure_coping"]
+
+    # work_dna from work_style
+    if not graph.get("work_dna") or not graph.get("work_dna", {}).get("decomposition_style"):
+        ws = graph.get("work_style", {})
+        if ws:
+            wd = graph.setdefault("work_dna", {})
+            if ws.get("approach") and not wd.get("decomposition_style"):
+                wd["decomposition_style"] = ws["approach"]
+            if ws.get("delegation") and not wd.get("delegation_style"):
+                wd["delegation_style"] = ws["delegation"]
+
+    # people from relationships.key_influences
+    if not graph.get("people"):
+        people = []
+        rels = graph.get("relationships", {})
+        if isinstance(rels, dict):
+            for influencer in rels.get("key_influences", []):
+                if isinstance(influencer, dict):
+                    people.append({
+                        "name": influencer.get("role", "Unknown"),
+                        "relationship": influencer.get("role", ""),
+                        "significance": influencer.get("impact", ""),
+                    })
+            # Also flat relationships
+            for key, val in rels.items():
+                if key not in ("key_influences", "trust_approach") and isinstance(val, str):
+                    people.append({"name": key, "relationship": key, "significance": val})
+        if people:
+            graph["people"] = people
+
+    return graph
+
+
 def _validate_graph(graph: dict) -> dict:
     """Ensure graph has required fields with defaults."""
+    # Normalize: if LLM returned nested format, flatten it
+    graph = _normalize_graph(graph)
+
     defaults = {
         "user_summary": "",
         "traits": [],
