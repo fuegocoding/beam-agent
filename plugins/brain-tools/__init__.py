@@ -172,3 +172,46 @@ def register(ctx) -> None:
         description="Get the current status of your digital brain.",
         emoji="📊",
     )
+
+    # Register gateway hook: auto-update SOUL.md when brain tools are used
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
+
+
+# ---------------------------------------------------------------------------
+# Gateway hook: auto-update SOUL.md on brain change
+# ---------------------------------------------------------------------------
+
+def _on_post_tool_call(
+    tool_name: str = "",
+    args: dict = None,
+    result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    **_: Any,
+) -> None:
+    """Regenerate SOUL.md after brain-building or export operations."""
+    if tool_name not in ("brain_export", "continue_interview"):
+        return
+
+    # For continue_interview, only regenerate if brain was just built
+    if tool_name == "continue_interview":
+        try:
+            import json
+            data = json.loads(result) if isinstance(result, str) else result
+            if not data.get("brain_built"):
+                return
+        except Exception:
+            return
+
+    try:
+        from brain.soul_generator import generate_soul_md
+        from hermes_constants import get_hermes_home
+
+        graph = _load_graph()
+        if graph:
+            hermes_home = get_hermes_home()
+            hermes_home.mkdir(parents=True, exist_ok=True)
+            generate_soul_md(graph, hermes_home / "SOUL.md")
+            logger.info("Auto-updated SOUL.md after %s", tool_name)
+    except Exception as exc:
+        logger.debug("SOUL.md auto-update failed: %s", exc)

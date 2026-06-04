@@ -1,211 +1,221 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/banner.png" alt="Beam Agent" width="100%">
 </p>
 
-# Hermes Agent ☤
+# Beam Agent
 
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="https://github.com/fuegocoding/beam-agent"><img src="https://img.shields.io/badge/GitHub-beam--agent-blue?style=for-the-badge" alt="GitHub"></a>
+  <a href="https://github.com/fuegocoding/beam-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**Your personal AI digital clone.** Beam builds a deep understanding of who you are through an adaptive interview, stores it as a personality graph, and deploys a 24/7 agent that thinks like you across all messaging platforms.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) — the 180k-star agent framework with 22+ messaging channels, a mature plugin/skill system, and a battle-tested conversation loop.
+
+---
+
+## What It Does
 
 <table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Singularity, Modal, and Daytona. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
+<tr><td><b>Adaptive Interview</b></td><td>Multi-pass personality interview (30+ questions across 6 domains). Follow-up detection for vagueness, contradiction, emotion, and depth. 3 passes: surface → deep → gaps.</td></tr>
+<tr><td><b>Personality Graph</b></td><td>Your identity stored as a knowledge graph — traits, beliefs, values, boundaries, life events, people, places, and 22 edge types. Built in Rust for performance.</td></tr>
+<tr><td><b>SOUL.md Generation</b></td><td>Auto-generates a SOUL.md from your personality graph. The agent loads it as its identity — it knows who you are, how you think, and how you communicate.</td></tr>
+<tr><td><b>Brain Search</b></td><td>Ask your agent about your own personality — "What do I believe about AI safety?" — and it searches your brain graph for relevant context.</td></tr>
+<tr><td><b>Memory System</b></td><td>Episodic, semantic, procedural, and style memories stored as human-readable Markdown files. Git-friendly, user-editable.</td></tr>
+<tr><td><b>24/7 Messaging</b></td><td>Deploy across Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Teams, and 15+ more platforms via the Hermes gateway.</td></tr>
 </table>
 
 ---
 
-## Quick Install
+## Architecture
 
-### Linux, macOS, WSL2, Termux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
-
-### Windows (native, PowerShell)
-
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
-
-Run this in PowerShell:
-
-```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
-```
-
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
-
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
-
-After installation:
-
-```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
-```
-
----
-
-## Getting Started
-
-```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
-```
-
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
-
----
-
-## Skip the API-key collection — Nous Portal
-
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
-
-- **300+ models** — pick any of them with `/model <name>`
-- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.
-
-One command from a fresh install:
-
-```bash
-hermes setup --portal
-```
-
-That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
-
-You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
-
----
-
-## CLI vs Messaging Quick Reference
-
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
-
-| Action                         | CLI                                           | Messaging platforms                                                              |
-| ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
-| Start chatting                 | `hermes`                                      | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation       | `/new` or `/reset`                            | `/new` or `/reset`                                                               |
-| Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
-| Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
-| Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
-| Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
-| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
-| Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
-
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
-
----
-
-## Documentation
-
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
-
-| Section                                                                                             | What's Covered                                             |
-| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)              | Scheduled tasks with platform delivery                     |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files)       | Project context that shapes every conversation             |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)             | Project structure, agent loop, key classes                 |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
-
----
-
-## Migrating from OpenClaw
-
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
-
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
-
-**Anytime after install:**
-
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
-
-What gets imported:
-
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
-
-Quick start for contributors — clone and go with `setup-hermes.sh`:
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
-```
-
-Manual path (equivalent to the above):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
+┌─────────────────────────────────────────────────────────────────┐
+│                    beam-agent (forked Hermes)                     │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │  CLI (beam)   │  │  Gateway     │  │  22+ Messaging       │   │
+│  │  beam chat    │  │  Daemon      │  │  Telegram/Discord/   │   │
+│  │  beam setup   │  │  (Python)    │  │  Slack/WhatsApp/...  │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
+│         └─────────────────┼──────────────────────┘               │
+│                           ▼                                      │
+│                    ┌──────────────┐                               │
+│                    │  Agent Loop  │  + SOUL.md + Skills           │
+│                    └──────┬───────┘                               │
+│         ┌─────────────────┼─────────────────┐                    │
+│         ▼                 ▼                 ▼                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │ Brain Search │  │ Memory       │  │ Interview            │   │
+│  │ (Python→Rust)│  │ (MD files)   │  │ (Python→Rust)        │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────────────┘   │
+│         ▼                 ▼                 ▼                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │  Rust        │  │  ~/.beam/    │  │  Rust Binaries       │   │
+│  │  brain-      │  │  memory/     │  │  beam-interview      │   │
+│  │  runtime     │  │  *.md        │  │  beam-brain-builder  │   │
+│  └──────────────┘  └──────────────┘  │  beam-brain-runtime  │   │
+│                                      └──────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Community
+## Quick Start
 
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+### Prerequisites
+
+- Python 3.11+
+- Rust 1.96+ (for brain binaries)
+- Neo4j 5.x (optional, for identity graph storage)
+
+### Install
+
+```bash
+# Clone the repo
+git clone https://github.com/fuegocoding/beam-agent.git
+cd beam-agent
+
+# Install Python dependencies
+pip install -e ".[all]"
+
+# Build Rust brain binaries
+cd brain-rust
+cargo build --release
+cd ..
+
+# Start beam
+beam
+```
+
+### Build Your Brain
+
+```
+/brain status          # Check if brain exists
+/interview             # Start the adaptive interview
+                       # Answer questions naturally across 3 passes
+/brain status          # See your brain coverage
+/brain export          # Generate SOUL.md + memory files
+```
+
+The interview covers 6 domains:
+- **Identity**: core traits, values, beliefs
+- **Relationships**: key people, social patterns
+- **Work**: procedural patterns, work loops, delegation style
+- **Emotional**: triggers, mood patterns, recovery
+- **Beliefs**: opinions, contradictions, convictions
+- **Procedural**: how you think, debug, decide
+
+---
+
+## Project Structure
+
+```
+beam-agent/
+├── brain/                          # Python brain module
+│   ├── brain_schema.py             # Pydantic v2 PersonalityGraph
+│   ├── subprocess_bridge.py        # Rust binary caller (JSON stdin/stdout)
+│   ├── interview_orchestrator.py   # Multi-pass interview state machine
+│   ├── brain_builder.py            # Extract personality from interview
+│   ├── brain_retriever.py          # Search/context/export/stats
+│   ├── md_memory.py                # MD file read/write (~/.beam/memory/)
+│   └── soul_generator.py           # SOUL.md from personality graph
+│
+├── brain-rust/                     # Rust workspace
+│   ├── src/lib.rs                  # PersonalityGraph schema (750 lines)
+│   ├── beam-interview/             # Adaptive interview engine
+│   ├── beam-brain-builder/         # 14 extractors + edge builder
+│   └── beam-brain-runtime/         # Search, context, export engine
+│
+├── plugins/
+│   ├── brain-tools/                # brain_search, brain_export, brain_status
+│   ├── interview/                  # start_interview, continue_interview
+│   └── memory/beam-memory/         # MD file memory provider
+│
+├── skills/
+│   ├── interview/                  # "build-my-brain" skill
+│   ├── brain-search/               # Brain search skill
+│   └── brain-export/               # Brain export skill
+│
+├── beam                            # CLI entry point
+├── cli.py                          # CLI (renamed from hermes)
+├── hermes_cli/                     # CLI internals (Hermes-derived)
+├── gateway/                        # Messaging gateway (22+ platforms)
+├── agent/                          # Agent loop, memory, providers
+├── tools/                          # Tool registry + implementations
+├── docker-compose.beam.yml         # Neo4j 5.26
+└── tests/beam/                     # E2E tests
+```
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `beam` | Start interactive chat (default) |
+| `beam chat` | Interactive chat |
+| `beam gateway` | Run messaging gateway |
+| `beam setup` | Setup wizard |
+| `/brain status` | Show brain statistics and coverage |
+| `/brain export` | Export brain to SOUL.md + memory files |
+| `/interview` | Start adaptive brain-building interview |
+| `/model` | Switch LLM provider/model |
+| `/skills` | Browse available skills |
+| `/help` | Show all commands |
+
+---
+
+## Storage
+
+| Layer | Technology | Location |
+|-------|-----------|----------|
+| Personality Graph | Rust + JSON | `~/.beam/brain/default/personality_graph.json` |
+| Episodic Memory | MD files | `~/.beam/memory/default/episodic/*.md` |
+| Semantic Memory | MD files | `~/.beam/memory/default/semantic/*.md` |
+| Procedural Memory | MD files | `~/.beam/memory/default/procedural/*.md` |
+| Style Profile | MD file | `~/.beam/memory/default/style.md` |
+| Agent Identity | SOUL.md | `~/.hermes/SOUL.md` (auto-generated) |
+| Sessions | SQLite | `~/.hermes/state.db` |
+| Config | YAML | `~/.hermes/config.yaml` |
+
+---
+
+## Docker (Neo4j)
+
+```bash
+docker compose -f docker-compose.beam.yml up -d
+```
+
+Starts Neo4j 5.26 on `bolt://localhost:7687` with default credentials (`neo4j/password`).
+
+---
+
+## Development
+
+### Build Rust binaries
+
+```bash
+cd brain-rust
+cargo build --release
+```
+
+### Run tests
+
+```bash
+python -m pytest tests/beam/ -v
+```
+
+### Key Architecture Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Fork base | NousResearch/hermes-agent | 180k stars, 22+ channels, mature plugin system |
+| New components | Rust | Performance, safety, clean JSON serde |
+| Rust↔Python bridge | Subprocess JSON | Simplest, no FFI complexity |
+| Memory | MD files | Human-readable, git-friendly, user-editable |
+| Interview | Multi-pass adaptive | Surface → Deep → Gaps with follow-up detection |
 
 ---
 
@@ -213,4 +223,4 @@ scripts/run_tests.sh
 
 MIT — see [LICENSE](LICENSE).
 
-Built by [Nous Research](https://nousresearch.com).
+Built on [hermes-agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com).
