@@ -242,7 +242,9 @@ all = [
 ]
 
 [project.scripts]
+beam = "hermes_cli.main:main"
 hermes = "hermes_cli.main:main"
+beam-agent = "run_agent:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
