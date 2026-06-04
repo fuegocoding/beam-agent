@@ -1,0 +1,8 @@
+name: brain-tools
+version: 0.1.0
+description: "Beam brain tools — search, export, and manage your digital brain personality graph."
+author: "beam-agent"
+tools:
+  - brain_search
+  - brain_export
+  - brain_status

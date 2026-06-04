@@ -1,0 +1,7 @@
+name: interview
+version: 0.1.0
+description: "Beam adaptive interview — build your digital brain through conversation."
+author: "beam-agent"
+tools:
+  - start_interview
+  - continue_interview
