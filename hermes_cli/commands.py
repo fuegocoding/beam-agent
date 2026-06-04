@@ -220,6 +220,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+
+    # --- Beam brain commands ---
+    CommandDef("brain", "Manage your digital brain (status, export)", "Tools & Skills",
+               subcommands=("status", "export"), args_hint="[status|export]"),
+    CommandDef("interview", "Start adaptive interview to build your digital brain", "Tools & Skills"),
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 

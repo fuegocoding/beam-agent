@@ -9095,6 +9095,10 @@ class HermesCLI:
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "brain":
+            self._handle_brain_command(cmd_original)
+        elif canonical == "interview":
+            self._handle_interview_command()
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -9931,6 +9935,58 @@ class HermesCLI:
                     self._pending_input.put(prompt)
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
+
+    def _handle_brain_command(self, cmd: str):
+        """Handle /brain — manage your digital brain."""
+        parts = cmd.strip().split(None, 1)
+        sub = parts[1].strip() if len(parts) > 1 else "status"
+
+        if sub == "status":
+            try:
+                import json as _json
+                from tools.brain_tools import brain_status
+                result = brain_status()
+                data = _json.loads(result)
+                if data.get("status") == "empty":
+                    _cprint(f"  {_DIM}No brain data found. Run /interview to build your brain.{_RST}")
+                else:
+                    _cprint(f"  {_ACCENT}Brain Status{_RST}")
+                    for key, val in data.items():
+                        _cprint(f"    {key}: {val}")
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain status error: {e}{_RST}")
+        elif sub == "export":
+            try:
+                import json as _json
+                from tools.brain_tools import brain_export
+                result = brain_export()
+                data = _json.loads(result)
+                if data.get("error"):
+                    _cprint(f"  {_DIM}{data['error']}{_RST}")
+                else:
+                    _cprint(f"  {_ACCENT}Brain exported:{_RST}")
+                    for key, val in data.items():
+                        _cprint(f"    {key}: {val}")
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain export error: {e}{_RST}")
+        else:
+            _cprint(f"  Usage: /brain [status|export]")
+
+    def _handle_interview_command(self):
+        """Handle /interview — start the adaptive brain-building interview."""
+        try:
+            from plugins.interview import _start_interview_handler
+            import json as _json
+            result = _start_interview_handler({})
+            data = _json.loads(result)
+            if data.get("error"):
+                _cprint(f"  {_DIM}{data['error']}{_RST}")
+            else:
+                _cprint(f"  {_ACCENT}Starting brain interview...{_RST}")
+                _cprint(f"  {data.get('question', 'No question returned')}")
+                _cprint(f"  {_DIM}(Use the agent to continue — answer naturally){_RST}")
+        except Exception as e:
+            _cprint(f"  {_DIM}Interview error: {e}{_RST}")
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
