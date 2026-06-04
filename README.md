@@ -80,32 +80,31 @@ cd beam-agent
 # Install Python dependencies
 pip install -e ".[all]"
 
-# Build Rust brain binaries
+# Build Rust brain binaries (optional — Python fallback available)
 cd brain-rust
 cargo build --release
 cd ..
 
-# Start beam
+# Start beam (single command — handles setup automatically)
 beam
 ```
 
+The `beam` command checks for API keys and config on first run, walks you through setup if needed, then starts the interactive CLI.
+
 ### Build Your Brain
 
-```
-/brain status          # Check if brain exists
-/interview             # Start the adaptive interview
-                       # Answer questions naturally across 3 passes
-/brain status          # See your brain coverage
-/brain export          # Generate SOUL.md + memory files
+```bash
+beam interview          # Start the adaptive interview (interactive)
+beam brain status       # Check brain coverage
+beam brain export       # Generate SOUL.md + memory files
 ```
 
-The interview covers 6 domains:
-- **Identity**: core traits, values, beliefs
-- **Relationships**: key people, social patterns
-- **Work**: procedural patterns, work loops, delegation style
-- **Emotional**: triggers, mood patterns, recovery
-- **Beliefs**: opinions, contradictions, convictions
-- **Procedural**: how you think, debug, decide
+Or inside the interactive CLI:
+```
+/interview              # Start interview
+/brain status           # Check coverage
+/brain export           # Export to SOUL.md
+```
 
 ---
 
