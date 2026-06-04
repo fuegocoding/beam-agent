@@ -39,45 +39,45 @@ def _inherited_flag(parser, *args, **kwargs):
 
 _EPILOGUE = """
 Examples:
-    hermes                        Start interactive chat
-    hermes chat -q "Hello"        Single query mode
-    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
-    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
-    hermes -c                     Resume the most recent session
-    hermes -c "my project"        Resume a session by name (latest in lineage)
-    hermes --resume <session_id>  Resume a specific session by ID
-    hermes setup                  Run setup wizard
-    hermes logout                 Clear stored authentication
-    hermes auth add <provider>    Add a pooled credential
-    hermes auth list              List pooled credentials
-    hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
-    hermes auth reset <provider>  Clear exhaustion status for a provider
-    hermes model                  Select default model
-    hermes fallback [list]        Show fallback provider chain
-    hermes fallback add           Add a fallback provider (same picker as `hermes model`)
-    hermes fallback remove        Remove a fallback provider from the chain
-    hermes config                 View configuration
-    hermes config edit            Edit config in $EDITOR
-    hermes config set model gpt-4 Set a config value
-    hermes gateway                Run messaging gateway
-    hermes -s hermes-agent-dev,github-auth
-    hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
-    hermes sessions list          List past sessions
-    hermes sessions browse        Interactive session picker
-    hermes sessions rename ID T   Rename/title a session
-    hermes logs                   View agent.log (last 50 lines)
-    hermes logs -f                Follow agent.log in real time
-    hermes logs errors            View errors.log
-    hermes logs --since 1h        Lines from the last hour
-    hermes debug share             Upload debug report for support
-    hermes update                 Update to latest version
-    hermes dashboard              Start web UI dashboard (port 9119)
-    hermes dashboard --stop       Stop running dashboard processes
-    hermes dashboard --status     List running dashboard processes
+    beam                          Start interactive chat
+    beam chat -q "Hello"          Single query mode
+    beam --tui                    Launch the modern TUI (or set display.interface: tui)
+    beam --cli                    Force the classic REPL (overrides display.interface: tui)
+    beam -c                       Resume the most recent session
+    beam -c "my project"          Resume a session by name (latest in lineage)
+    beam --resume <session_id>    Resume a specific session by ID
+    beam setup                    Run setup wizard
+    beam logout                   Clear stored authentication
+    beam auth add <provider>      Add a pooled credential
+    beam auth list                List pooled credentials
+    beam auth remove <p> <t>      Remove pooled credential by index, id, or label
+    beam auth reset <provider>    Clear exhaustion status for a provider
+    beam model                    Select default model
+    beam fallback [list]          Show fallback provider chain
+    beam fallback add             Add a fallback provider (same picker as `beam model`)
+    beam fallback remove          Remove a fallback provider from the chain
+    beam config                   View configuration
+    beam config edit              Edit config in $EDITOR
+    beam config set model gpt-4   Set a config value
+    beam gateway                  Run messaging gateway
+    beam -s beam-skills,github-auth
+    beam -w                       Start in isolated git worktree
+    beam gateway install          Install gateway background service
+    beam sessions list            List past sessions
+    beam sessions browse          Interactive session picker
+    beam sessions rename ID T     Rename/title a session
+    beam logs                     View agent.log (last 50 lines)
+    beam logs -f                  Follow agent.log in real time
+    beam logs errors              View errors.log
+    beam logs --since 1h          Lines from the last hour
+    beam debug share              Upload debug report for support
+    beam update                   Update to latest version
+    beam dashboard                Start web UI dashboard (port 9119)
+    beam dashboard --stop         Stop running dashboard processes
+    beam dashboard --status       List running dashboard processes
 
 For more help on a command:
-    hermes <command> --help
+    beam <command> --help
 """
 
 
@@ -89,8 +89,8 @@ def build_top_level_parser():
     other subparsers via ``subparsers.add_parser(...)``.
     """
     parser = argparse.ArgumentParser(
-        prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        prog="beam",
+        description="Beam Agent - Your personal AI digital clone",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOGUE,
     )
@@ -132,7 +132,7 @@ def build_top_level_parser():
         help=(
             "Provider override for this invocation (e.g. openrouter, anthropic). "
             "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
-            "under model.provider — use `hermes setup` or edit the file to change it."
+            "under model.provider — use `beam setup` or edit the file to change it."
         ),
     )
     parser.add_argument(
