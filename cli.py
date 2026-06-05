@@ -3420,6 +3420,7 @@ class HermesCLI:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        self._brain_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -3675,10 +3676,20 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # Active brain name (sits beside the model in the status bar).
+        # Looked up on every snapshot so /brain pickers reflect immediately.
+        brain_name = "default"
+        try:
+            from brain.paths import get_active_brain_name
+            brain_name = get_active_brain_name() or "default"
+        except Exception:
+            pass
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "brain_name": brain_name,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -4003,7 +4014,7 @@ class HermesCLI:
             return f"☄ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
-        if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
+        if not self._status_bar_visible or getattr(self, '_model_picker_state', None) or getattr(self, '_brain_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -4021,6 +4032,8 @@ class HermesCLI:
                     ("class:status-bar", " ☄ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
+                    ("class:status-bar-dim", f"🧠 {snapshot['brain_name']}"),
+                    ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
                 if yolo_active:
@@ -4037,6 +4050,8 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ☄ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", f"🧠 {snapshot['brain_name']}"),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -4072,6 +4087,8 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ☄ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", f"🧠 {snapshot['brain_name']}"),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -7811,6 +7828,97 @@ class HermesCLI:
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
 
+    def _open_brain_picker(self) -> None:
+        """Open prompt_toolkit-native /brain picker modal.
+
+        Lists all installed brains; the highlighted one becomes the active
+        brain on Enter. Mirrors the /model picker UX (arrow keys + Enter)
+        so the user has a single muscle memory for both pickers.
+        """
+        try:
+            from brain.paths import list_brains
+            brains = list_brains()
+        except Exception as exc:
+            _cprint(f"  ✗ Could not list brains: {exc}")
+            return
+
+        if not brains:
+            _cprint("  No brains installed.")
+            _cprint("  Use 'beam install <slug>' to install a brain from the marketplace.")
+            return
+
+        # Pre-select the currently active brain so Enter on a single-brain
+        # install is a no-op confirmation, not a destructive re-select.
+        default_idx = next(
+            (i for i, b in enumerate(brains) if b.get("active")),
+            0,
+        )
+
+        self._capture_modal_input_snapshot()
+        self._brain_picker_state = {
+            "brains": brains,
+            "selected": default_idx,
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_brain_picker(self) -> None:
+        self._brain_picker_state = None
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _handle_brain_picker_selection(self) -> None:
+        """Activate the brain highlighted in the picker."""
+        state = self._brain_picker_state
+        if not state:
+            return
+        brains = state.get("brains") or []
+        selected = state.get("selected", 0)
+        cancel_idx = len(brains)
+        if selected >= cancel_idx:
+            self._close_brain_picker()
+            return
+        if selected < 0 or selected >= len(brains):
+            self._close_brain_picker()
+            return
+
+        chosen = brains[selected]
+        name = chosen.get("name")
+        if not name:
+            self._close_brain_picker()
+            return
+
+        # Idempotent: re-selecting the active brain is fine.
+        try:
+            from brain.paths import set_active_brain
+            from hermes_cli.brain_cmds import _regenerate_soul
+            set_active_brain(name)
+        except SystemExit:
+            self._close_brain_picker()
+            return
+        except Exception as exc:
+            _cprint(f"  ✗ Could not switch brain: {exc}")
+            self._close_brain_picker()
+            return
+
+        if chosen.get("active"):
+            _cprint(f"  ✓ Brain '{name}' is already active.")
+        else:
+            _cprint(f"  ✓ Switched to brain '{name}'.")
+
+        # SOUL.md is the prompt fragment the agent reads; without regenerating
+        # it, the new brain's personality is invisible to the model until
+        # the next session.
+        try:
+            _regenerate_soul(name)
+            _cprint(f"    SOUL.md regenerated.")
+        except Exception as exc:
+            _cprint(f"    ⚠ Could not regenerate SOUL.md: {exc}")
+
+        # Invalidate any cached status-bar / banner fragments that baked in
+        # the previous brain name.
+        self._invalidate(min_interval=0.0)
+        self._close_brain_picker()
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -9937,10 +10045,18 @@ class HermesCLI:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
     def _handle_brain_command(self, cmd: str):
-        """Handle /brain — manage your digital brain."""
+        """Handle /brain — manage your digital brain.
+
+        With no arguments, opens an interactive picker (same UX as /model).
+        Subcommands remain available for scripted / power-user flows.
+        """
         parts = cmd.strip().split(None, 2)
-        sub = parts[1].strip().lower() if len(parts) > 1 else "status"
+        sub = parts[1].strip().lower() if len(parts) > 1 else None
         arg = parts[2].strip() if len(parts) > 2 else None
+
+        if sub is None:
+            self._open_brain_picker()
+            return
 
         if sub == "list":
             try:
@@ -13108,6 +13224,7 @@ class HermesCLI:
         slash_confirm_widget=None,
         clarify_widget,
         model_picker_widget=None,
+        brain_picker_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -13133,6 +13250,7 @@ class HermesCLI:
                 slash_confirm_widget,
                 clarify_widget,
                 model_picker_widget,
+                brain_picker_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -13408,6 +13526,17 @@ class HermesCLI:
                 except Exception as _exc:
                     _cprint(f"  ✗ Model selection failed: {_exc}")
                     self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            # --- /brain picker modal ---
+            if self._brain_picker_state:
+                try:
+                    self._handle_brain_picker_selection()
+                except Exception as _exc:
+                    _cprint(f"  ✗ Brain selection failed: {_exc}")
+                    self._close_brain_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
@@ -13715,6 +13844,31 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /brain picker: arrow-key navigation ---
+        @kb.add('up', filter=Condition(lambda: bool(self._brain_picker_state)))
+        def brain_picker_up(event):
+            if self._brain_picker_state:
+                self._brain_picker_state["selected"] = max(
+                    0, self._brain_picker_state.get("selected", 0) - 1
+                )
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._brain_picker_state)))
+        def brain_picker_down(event):
+            state = self._brain_picker_state
+            if not state:
+                return
+            max_idx = len(state.get("brains") or [])  # last index is Cancel
+            state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._brain_picker_state)), eager=True)
+        def brain_picker_escape(event):
+            """ESC closes the /brain picker."""
+            self._close_brain_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -13748,7 +13902,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._brain_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -14858,6 +15012,66 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
         )
 
+        # --- /brain picker: display widget ---
+        def _get_brain_picker_display():
+            state = cli_ref._brain_picker_state
+            if not state:
+                return []
+            brains = state.get("brains") or []
+            title = "🧠 Brain Picker — Select Active Brain"
+            choices = []
+            for b in brains:
+                marker = "●" if b.get("active") else "○"
+                name = b.get("name", "?")
+                source = b.get("source", "local")
+                lock = " 🔒" if b.get("has_token") else ""
+                label = f"{marker} {name}  [{source}]{lock}"
+                if b.get("active"):
+                    label += "  ← current"
+                choices.append(label)
+            choices.append("Cancel")
+            active_name = next((b["name"] for b in brains if b.get("active")), "none")
+            hint = f"Active: {active_name}  ({len(brains)} installed)"
+
+            box_width = _panel_box_width(title, [hint] + choices, min_width=42, max_width=72)
+            inner_text_width = max(8, box_width - 6)
+            selected = state.get("selected", 0)
+
+            try:
+                from prompt_toolkit.application import get_app
+                term_rows = get_app().output.get_size().rows
+            except Exception:
+                term_rows = shutil.get_terminal_size((100, 24)).lines
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            for idx in range(scroll_offset, scroll_offset + visible):
+                choice = choices[idx]
+                style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
+                prefix = '❯ ' if idx == selected else '  '
+                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        brain_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_brain_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._brain_picker_state is not None),
+        )
+
         # Horizontal rules above and below the input.
         # On narrow/mobile terminals we keep the top separator for structure but
         # hide the bottom one to recover a full row for conversation content.
@@ -14938,6 +15152,7 @@ class HermesCLI:
                     slash_confirm_widget=slash_confirm_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    brain_picker_widget=brain_picker_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,
