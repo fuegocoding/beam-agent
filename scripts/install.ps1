@@ -10,7 +10,9 @@ Write-Host "☄ Installing Beam Agent..." -ForegroundColor Cyan
 # Check for uv
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "Installing uv..."
+    $ErrorActionPreference = "Continue"
     irm https://astral.sh/uv/install.ps1 | iex
+    $ErrorActionPreference = "Stop"
     $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 }
 
@@ -26,19 +28,24 @@ if (Test-Path "$BEAM_DIR\.git") {
 # Install
 Write-Host "Installing dependencies..."
 Set-Location $BEAM_DIR
+$ErrorActionPreference = "Continue"
 try {
-    uv tool install -e $BEAM_DIR --python 3.12 --force 2>$null
+    uv tool install -e $BEAM_DIR --python 3.12 --force 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
 } catch {
     try {
-        uv tool install -e $BEAM_DIR --force 2>$null
+        uv tool install -e $BEAM_DIR --force 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
     } catch {
         Write-Host "Trying with venv fallback..."
-        uv venv .venv --python 3.12 2>$null; if ($LASTEXITCODE -ne 0) { uv venv .venv }
-        uv pip install -e $BEAM_DIR --python .venv
+        uv venv .venv --python 3.12 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { uv venv .venv 2>&1 | Out-Null }
+        uv pip install -e $BEAM_DIR --python .venv 2>&1 | Out-Null
         Write-Host ""
         Write-Host "Add to your PATH: $BEAM_DIR\.venv\Scripts"
     }
 }
+$ErrorActionPreference = "Stop"
 
 # Create beam directories
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.beam\brain\default" | Out-Null
