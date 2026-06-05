@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Beam Agent CLI - Main entry point.
 
@@ -1835,7 +1835,7 @@ def _launch_tui(
         from hermes_cli.relaunch import relaunch
 
         print()
-        print("⚕ Launching update...")
+        print("☄ Launching update...")
         print()
         relaunch(["update"], preserve_inherited=False)
 
@@ -2119,7 +2119,7 @@ def cmd_whatsapp(args):
     from hermes_cli.config import get_env_value, save_env_value
 
     print()
-    print("⚕ WhatsApp Setup")
+    print("☄ WhatsApp Setup")
     print("=" * 50)
 
     # ── Step 1: Choose mode ──────────────────────────────────────────────
@@ -2320,14 +2320,14 @@ def cmd_whatsapp(args):
             print("    2. Send a message to the bot's WhatsApp number")
             print("    3. The agent will reply automatically")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Beam Agent'")
+            print("  Tip: Agent responses are prefixed with '☄ Beam Agent'")
         else:
             print("  Next steps:")
             print("    1. Start the gateway:  beam gateway")
             print("    2. Open WhatsApp → Message Yourself")
             print("    3. Type a message — the agent will reply")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Beam Agent'")
+            print("  Tip: Agent responses are prefixed with '☄ Beam Agent'")
             print("  so you can tell them apart from your own messages.")
         print()
         print("  Or install as a service: beam gateway install")
@@ -2349,7 +2349,7 @@ def cmd_postinstall(args):
 
     stamp_install_method("pip")
 
-    print("⚕ Beam post-install bootstrap")
+    print("☄ Beam post-install bootstrap")
     print()
 
     for dep in ("node", "browser", "ripgrep", "ffmpeg"):
@@ -6691,19 +6691,42 @@ def cmd_interview(args):
                 graph_path = brain_dir / "personality_graph.json"
                 graph_path.write_text(json.dumps(graph, indent=2))
 
+                # Ask user to name their clone
+                print("\n--- Interview complete! ---\n")
+                clone_name = ""
+                try:
+                    clone_name = input("What should your clone be called? (press Enter to skip): ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    pass
+
+                if clone_name:
+                    graph["clone_name"] = clone_name
+                    graph_path.write_text(json.dumps(graph, indent=2))
+                    # Save name to beam config
+                    name_file = beam_home / "clone_name.txt"
+                    name_file.write_text(clone_name, encoding="utf-8")
+                    print(f"\nClone named: {clone_name}")
+
                 # Generate SOUL.md
                 from hermes_constants import get_hermes_home
                 hermes_home = get_hermes_home()
                 hermes_home.mkdir(parents=True, exist_ok=True)
                 try:
                     from brain.soul_generator import generate_soul_md
-                    generate_soul_md(graph, hermes_home / "SOUL.md")
+                    soul_content = generate_soul_md(graph, hermes_home / "SOUL.md")
+                    # Prepend clone name to SOUL.md if set
+                    if clone_name:
+                        named_content = f"# {clone_name}'s Soul\n\n" + soul_content.split("# Soul", 1)[-1] if "# Soul" in soul_content else soul_content
+                        (hermes_home / "SOUL.md").write_text(named_content, encoding="utf-8")
                     print(f"SOUL.md generated at {hermes_home / 'SOUL.md'}")
                 except Exception as e:
                     print(f"SOUL.md generation warning: {e}")
 
                 print(f"Brain saved to {graph_path}")
-                print(f"\nBrain built! Run 'beam brain status' to see coverage.")
+                if clone_name:
+                    print(f"\n{clone_name} is ready. Run 'beam' to talk to your clone.")
+                else:
+                    print(f"\nBrain built! Run 'beam' to talk to your clone.")
                 break
 
             # Show next question
@@ -9851,7 +9874,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         elif result == 0:
             print("✓ Already up to date.")
         else:
-            print("⚕ Update available on PyPI.")
+            print("☄ Update available on PyPI.")
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 
@@ -9941,7 +9964,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("✓ Already up to date.")
     else:
         commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        print(f"☄ Update available: {behind} {commits_word} behind {compare_branch}.")
         from hermes_cli.config import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")
@@ -10291,7 +10314,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
 
-    print("⚕ Updating Beam Agent...")
+    print("☄ Updating Beam Agent...")
     print()
 
     # On Windows, abort early if another hermes.exe is holding the venv shim

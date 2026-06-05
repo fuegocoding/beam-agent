@@ -46,18 +46,21 @@ def _call_llm(system: str, user: str, temperature: float = 0.7, max_tokens: int 
 def generate_soul_md(graph: dict, output_path: Path = None) -> str:
     """Generate SOUL.md from a PersonalityGraph.
 
-    Uses LLM to write a natural, warm identity document.
+    Uses LLM to write a warm, natural identity document.
     Falls back to a simple template if LLM is unavailable.
     """
     if output_path is None:
         output_path = BEAM_HOME / "SOUL.md"
 
+    clone_name = graph.get("clone_name", "")
+
     # Try LLM generation first
     try:
         graph_summary = _summarize_graph(graph)
+        name_hint = f"The person's name is {clone_name}. " if clone_name else ""
         soul_content = _call_llm(
             "You are a personal identity writer. Write warm, natural prose.",
-            f"{SOUL_PROMPT}\n\nPersonality data:\n{graph_summary}",
+            f"{SOUL_PROMPT}\n\n{name_hint}Personality data:\n{graph_summary}",
             temperature=0.7,
             max_tokens=2000,
         )
@@ -69,6 +72,12 @@ def generate_soul_md(graph: dict, output_path: Path = None) -> str:
     except Exception as e:
         logger.warning("LLM SOUL.md generation failed, using template: %s", e)
         soul_content = _template_soul(graph)
+
+    # Prepend clone name to title
+    if clone_name and "# Soul" in soul_content:
+        soul_content = soul_content.replace("# Soul", f"# {clone_name}'s Soul", 1)
+    elif clone_name and not soul_content.startswith(f"# {clone_name}"):
+        soul_content = f"# {clone_name}'s Soul\n\n{soul_content}"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(soul_content, encoding="utf-8")
