@@ -179,7 +179,7 @@ def main():
         "memory", "bundles", "curator", "insights", "claw", "migrate",
         "security", "dump", "pairing", "secrets", "slack", "whatsapp",
         "proxy", "lsp", "postinstall", "computer-use", "fallback",
-        "prompt-size", "reset",
+        "prompt-size", "reset", "install", "build",
     }
 
     is_subcommand = bool(args) and args[0] in SUBCOMMANDS
