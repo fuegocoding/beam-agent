@@ -2,10 +2,9 @@
 """
 Beam Agent CLI launcher.
 
-Single command to start everything:
-1. Checks for API key (runs setup if missing)
-2. Checks Docker/Neo4j availability
-3. Starts the interactive CLI
+Single command startup:
+1. First run: setup provider + API key, then run interview to build brain
+2. Subsequent runs: launch interactive CLI
 """
 
 import os
@@ -29,7 +28,6 @@ def _check_api_key() -> bool:
                 ]):
                     return True
 
-    # Also check environment
     for var in [
         "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
@@ -42,48 +40,73 @@ def _check_api_key() -> bool:
 
 
 def _check_config() -> bool:
-    """Check if beam is configured (config.yaml exists)."""
-    config_path = Path.home() / ".hermes" / "config.yaml"
-    return config_path.exists()
+    """Check if beam is configured."""
+    return (Path.home() / ".hermes" / "config.yaml").exists()
+
+
+def _check_brain() -> bool:
+    """Check if brain has been built."""
+    brain_path = Path.home() / ".beam" / "brain" / "default" / "personality_graph.json"
+    return brain_path.exists() and brain_path.stat().st_size > 50
 
 
 def _run_setup():
-    """Run the setup wizard."""
-    print("Welcome to Beam Agent! Let's get you set up.\n")
-    print("You need an API key for an LLM provider.")
-    print("Options: OpenRouter (200+ models), OpenAI, Anthropic, Gemini, etc.\n")
-    print("Get an OpenRouter key at: https://openrouter.ai/keys\n")
+    """Run setup wizard for API key and provider."""
+    print("\n" + "=" * 50)
+    print("  ☄ Welcome to Beam Agent")
+    print("=" * 50)
+    print("\nFirst, let's set up your LLM provider.\n")
+    print("Beam works with any OpenAI-compatible provider:")
+    print("  • OpenRouter (200+ models) — https://openrouter.ai/keys")
+    print("  • OpenAI — https://platform.openai.com/api-keys")
+    print("  • Anthropic — https://console.anthropic.com/")
+    print("  • Google Gemini — https://aistudio.google.com/apikey")
+    print("  • DeepSeek — https://platform.deepseek.com/")
+    print()
 
-    api_key = input("Paste your API key (or press Enter to skip): ").strip()
-    if api_key:
-        hermes_dir = Path.home() / ".hermes"
-        hermes_dir.mkdir(parents=True, exist_ok=True)
-        env_path = hermes_dir / ".env"
+    api_key = input("Paste your API key: ").strip()
+    if not api_key:
+        print("\nNo API key provided. You can add one later:")
+        print("  echo OPENROUTER_API_KEY=sk-or-... >> ~/.hermes/.env")
+        return False
 
-        # Determine provider from key prefix
-        if api_key.startswith("sk-or-"):
-            provider = "OPENROUTER_API_KEY"
-        elif api_key.startswith("sk-ant-"):
-            provider = "ANTHROPIC_API_KEY"
-        elif api_key.startswith("sk-"):
-            provider = "OPENAI_API_KEY"
-        elif api_key.startswith("AIza"):
-            provider = "GEMINI_API_KEY"
-        else:
-            provider = "OPENROUTER_API_KEY"
+    hermes_dir = Path.home() / ".hermes"
+    hermes_dir.mkdir(parents=True, exist_ok=True)
+    env_path = hermes_dir / ".env"
 
-        # Append to .env
-        with open(env_path, "a") as f:
-            f.write(f"\n{provider}={api_key}\n")
-        print(f"\nAPI key saved to {env_path}")
+    # Detect provider from key prefix
+    if api_key.startswith("sk-or-"):
+        provider_key = "OPENROUTER_API_KEY"
+        provider_name = "openrouter"
+        default_model = "anthropic/claude-sonnet-4"
+    elif api_key.startswith("sk-ant-"):
+        provider_key = "ANTHROPIC_API_KEY"
+        provider_name = "anthropic"
+        default_model = "claude-sonnet-4"
+    elif api_key.startswith("sk-"):
+        provider_key = "OPENAI_API_KEY"
+        provider_name = "openai"
+        default_model = "gpt-4o"
+    elif api_key.startswith("AIza"):
+        provider_key = "GEMINI_API_KEY"
+        provider_name = "gemini"
+        default_model = "gemini-2.5-flash"
+    else:
+        provider_key = "OPENROUTER_API_KEY"
+        provider_name = "openrouter"
+        default_model = "anthropic/claude-sonnet-4"
 
-        # Set default provider in config
-        config_path = hermes_dir / "config.yaml"
-        if not config_path.exists():
-            provider_name = "openrouter" if "OPENROUTER" in provider else provider.split("_")[0].lower()
-            config_content = f"""model:
+    # Save API key
+    with open(env_path, "a") as f:
+        f.write(f"\n{provider_key}={api_key}\n")
+    print(f"\n✓ API key saved to {env_path}")
+
+    # Create config
+    config_path = hermes_dir / "config.yaml"
+    if not config_path.exists():
+        config_content = f"""model:
   provider: {provider_name}
-  default: anthropic/claude-sonnet-4
+  default: {default_model}
 
 agent:
   max_iterations: 90
@@ -91,51 +114,85 @@ agent:
 display:
   skin: default
 """
-            config_path.write_text(config_content)
-            print(f"Config saved to {config_path}")
-    else:
-        print("\nSkipping API key setup. Add one later to ~/.hermes/.env")
-        print("Format: OPENROUTER_API_KEY=sk-or-...\n")
+        config_path.write_text(config_content)
+        print(f"✓ Config saved to {config_path}")
 
-    # Set up beam home
+    return True
+
+
+def _run_first_time():
+    """Full first-time experience: setup → interview."""
+    # Step 1: Setup
+    if not _check_api_key():
+        success = _run_setup()
+        if not success:
+            return
+    else:
+        print("\n☄ Beam Agent")
+        print("API key found. Let's build your digital clone.\n")
+
+    # Ensure directories exist
     beam_home = Path.home() / ".beam"
     beam_home.mkdir(parents=True, exist_ok=True)
     (beam_home / "brain" / "default").mkdir(parents=True, exist_ok=True)
     (beam_home / "memory" / "default").mkdir(parents=True, exist_ok=True)
-    print(f"Beam home: {beam_home}\n")
+
+    # Step 2: Interview (if brain not built)
+    if not _check_brain():
+        print("Your brain hasn't been built yet.")
+        print("Starting the interview to create your digital clone...\n")
+
+        # Import and run interview directly
+        try:
+            from hermes_cli.main import cmd_interview
+            import argparse
+            args = argparse.Namespace()
+            cmd_interview(args)
+        except KeyboardInterrupt:
+            print("\nInterview interrupted. Run 'beam interview' to continue later.")
+        except Exception as e:
+            print(f"\nInterview error: {e}")
+            print("Run 'beam interview' to try again.")
+    else:
+        print("Brain found. Launching Beam...\n")
+        _launch_cli()
+
+
+def _launch_cli():
+    """Launch the main CLI."""
+    from hermes_cli.main import main as hermes_main
+    hermes_main()
 
 
 def main():
     """Beam Agent — single command startup."""
-    # Check if this is a subcommand (not bare `beam`)
     args = sys.argv[1:]
-    is_subcommand = bool(args) and args[0] in [
+
+    # Subcommands skip first-time flow
+    SUBCOMMANDS = {
         "chat", "gateway", "setup", "model", "tools", "config",
         "doctor", "update", "status", "version", "brain", "interview",
         "cron", "acp", "sessions", "uninstall", "logs", "skills",
-    ]
+        "profile", "dashboard", "desktop", "gui", "mcp", "plugins",
+        "kanban", "hooks", "debug", "backup", "import", "completion",
+        "send", "webhook", "portal", "auth", "login", "logout",
+        "memory", "bundles", "curator", "insights", "claw", "migrate",
+        "security", "dump", "pairing", "secrets", "slack", "whatsapp",
+        "proxy", "lsp", "postinstall", "computer-use", "fallback",
+        "prompt-size", "reset",
+    }
 
-    # Only run first-time checks for bare `beam` or `beam chat`
-    if not is_subcommand or (args and args[0] == "chat"):
-        # Check config exists
-        if not _check_config():
-            print("First-time setup required.\n")
-            _run_setup()
+    is_subcommand = bool(args) and args[0] in SUBCOMMANDS
 
-        # Check API key
-        if not _check_api_key():
-            print("No API key found. Let's set one up.\n")
-            _run_setup()
-
-        # Ensure beam directories exist
-        beam_home = Path.home() / ".beam"
-        beam_home.mkdir(parents=True, exist_ok=True)
-        (beam_home / "brain" / "default").mkdir(parents=True, exist_ok=True)
-        (beam_home / "memory" / "default").mkdir(parents=True, exist_ok=True)
-
-    # Launch the CLI (hermes_cli.main:main)
-    from hermes_cli.main import main as hermes_main
-    hermes_main()
+    if is_subcommand:
+        # Direct launch for subcommands
+        _launch_cli()
+    else:
+        # First-time flow for bare `beam`
+        if not _check_config() or not _check_brain():
+            _run_first_time()
+        else:
+            _launch_cli()
 
 
 if __name__ == "__main__":

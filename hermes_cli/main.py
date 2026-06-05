@@ -6596,7 +6596,7 @@ def cmd_version(args):
 
 def cmd_brain(args):
     """Manage your digital brain."""
-    action = getattr(args, "action", "status")
+    action = getattr(args, "brain_action", None) or getattr(args, "action", "status")
 
     if action == "status":
         try:
@@ -6630,6 +6630,209 @@ def cmd_brain(args):
         except Exception as e:
             print(f"Brain export error: {e}")
 
+    elif action == "ingest":
+        file_path = getattr(args, "file", None)
+        label = getattr(args, "label", None)
+
+        if not file_path:
+            print("Usage: beam brain ingest <file> [--label 'description']")
+            return
+
+        path = Path(file_path)
+        if not path.exists():
+            print(f"File not found: {file_path}")
+            return
+
+        # Read file content
+        try:
+            if path.suffix.lower() == ".pdf":
+                print("PDF support coming soon. For now, use .txt or .md files.")
+                return
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"Error reading file: {e}")
+            return
+
+        if len(content) < 50:
+            print("File too short to extract meaningful data.")
+            return
+
+        # Truncate very long files
+        if len(content) > 20000:
+            content = content[:20000]
+            print(f"File truncated to 20,000 characters for processing.")
+
+        print(f"Ingesting: {path.name} ({len(content)} characters)")
+
+        # Extract personality data from the file
+        import sys
+        import threading
+        import itertools
+
+        _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        _stop = threading.Event()
+        _thread = None
+
+        def _spin(msg):
+            def _run():
+                frames = itertools.cycle(_SPINNER)
+                while not _stop.is_set():
+                    sys.stdout.write(f"\r  {next(frames)} {msg}... ")
+                    sys.stdout.flush()
+                    _stop.wait(0.1)
+                sys.stdout.write("\r" + " " * 60 + "\r")
+                sys.stdout.flush()
+            global _thread
+            _thread = threading.Thread(target=_run, daemon=True)
+            _thread.start()
+
+        def _stop_spin():
+            _stop.set()
+            if _thread:
+                _thread.join(timeout=0.3)
+
+        _INGEST_PROMPT = """Analyze this writing sample and extract personality data about the author.
+
+Output ONLY valid JSON with this structure:
+{
+  "voice_dna": {
+    "characteristic_phrases": ["exact phrases the author uses"],
+    "phrases_to_avoid": [],
+    "humor_style": "description of their humor",
+    "response_length_pattern": "concise/verbose/adapts",
+    "formality_range": "casual/formal/mixed",
+    "storytelling_style": "how they tell stories"
+  },
+  "writing_style": {
+    "tone": "overall tone description",
+    "vocabulary_level": "simple/advanced/technical",
+    "sentence_structure": "short/long/varied",
+    "rhythm": "fast/slow/varied"
+  },
+  "beliefs": [
+    {"name": "belief extracted from text", "confidence": 0.0-1.0, "summary": "one sentence"}
+  ],
+  "values": [
+    {"name": "value demonstrated in writing", "importance": 0.0-1.0, "summary": "one sentence"}
+  ],
+  "traits": [
+    {"name": "personality trait evident in writing", "strength": 0.0-1.0, "summary": "one sentence"}
+  ],
+  "ideas": ["key ideas or themes from the text"],
+  "summary": "2-3 sentence summary of what this writing reveals about the author"
+}"""
+
+        _stop.clear()
+        _spin("Analyzing writing style and extracting personality")
+        try:
+            from agent.auxiliary_client import call_llm
+            import json
+
+            label_hint = f" (labeled: {label})" if label else ""
+            response = call_llm(
+                messages=[
+                    {"role": "system", "content": "You are a personality analyst. Extract personality data from writing samples. Output ONLY valid JSON."},
+                    {"role": "user", "content": f"Analyze this writing sample{label_hint} and extract the author's personality:\n\n{content[:15000]}"},
+                ],
+                max_tokens=4000,
+                temperature=0.3,
+                timeout=120.0,
+            )
+            result_text = (response.choices[0].message.content or "").strip()
+        except Exception as e:
+            _stop_spin()
+            print(f"LLM analysis failed: {e}")
+            return
+        finally:
+            _stop_spin()
+
+        # Parse result
+        try:
+            if result_text.startswith("```"):
+                lines = result_text.split("\n")
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                result_text = "\n".join(lines).strip()
+            extracted = json.loads(result_text)
+        except Exception as e:
+            print(f"Failed to parse analysis: {e}")
+            print(f"Raw output: {result_text[:200]}")
+            return
+
+        # Load existing graph
+        beam_home = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
+        graph_path = beam_home / "brain" / "default" / "personality_graph.json"
+
+        if graph_path.exists():
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        else:
+            graph = {}
+
+        # Merge extracted data
+        _spin("Merging into personality graph")
+
+        # Merge voice_dna (prefer extracted, keep existing for missing fields)
+        existing_voice = graph.get("voice_dna", {})
+        new_voice = extracted.get("voice_dna", {})
+        for key in ["characteristic_phrases", "phrases_to_avoid"]:
+            existing_list = existing_voice.get(key, [])
+            new_list = new_voice.get(key, [])
+            if new_list:
+                merged = list(set(existing_list + new_list))
+                existing_voice[key] = merged[:20]  # Cap at 20
+        for key in ["humor_style", "response_length_pattern", "formality_range", "storytelling_style"]:
+            if new_voice.get(key) and not existing_voice.get(key):
+                existing_voice[key] = new_voice[key]
+        graph["voice_dna"] = existing_voice
+
+        # Merge beliefs
+        existing_beliefs = graph.get("beliefs", [])
+        existing_names = {b.get("name", "") for b in existing_beliefs if isinstance(b, dict)}
+        for b in extracted.get("beliefs", []):
+            if isinstance(b, dict) and b.get("name", "") not in existing_names:
+                existing_beliefs.append(b)
+                existing_names.add(b.get("name", ""))
+        graph["beliefs"] = existing_beliefs
+
+        # Merge values
+        existing_values = graph.get("values", [])
+        existing_val_names = {v.get("name", "") for v in existing_values if isinstance(v, dict)}
+        for v in extracted.get("values", []):
+            if isinstance(v, dict) and v.get("name", "") not in existing_val_names:
+                existing_values.append(v)
+                existing_val_names.add(v.get("name", ""))
+        graph["values"] = existing_values
+
+        # Merge traits
+        existing_traits = graph.get("traits", [])
+        existing_trait_names = {t.get("name", "") for t in existing_traits if isinstance(t, dict)}
+        for t in extracted.get("traits", []):
+            if isinstance(t, dict) and t.get("name", "") not in existing_trait_names:
+                existing_traits.append(t)
+                existing_trait_names.add(t.get("name", ""))
+        graph["traits"] = existing_traits
+
+        # Store writing samples metadata
+        if "writing_samples" not in graph:
+            graph["writing_samples"] = []
+        graph["writing_samples"].append({
+            "file": str(path.name),
+            "label": label or path.stem,
+            "summary": extracted.get("summary", ""),
+            "ideas": extracted.get("ideas", []),
+            "tone": extracted.get("writing_style", {}).get("tone", ""),
+        })
+
+        _stop_spin()
+
+        # Save
+        graph_path.write_text(json.dumps(graph, indent=2))
+        print(f"✓ Ingested: {path.name}")
+        print(f"  Beliefs added: {len(extracted.get('beliefs', []))}")
+        print(f"  Values added: {len(extracted.get('values', []))}")
+        print(f"  Traits added: {len(extracted.get('traits', []))}")
+        if extracted.get("voice_dna", {}).get("characteristic_phrases"):
+            print(f"  Phrases added: {len(extracted['voice_dna']['characteristic_phrases'])}")
+        print(f"\nRun 'beam brain status' to see updated coverage.")
 
 def cmd_interview(args):
     """Start the adaptive brain-building interview."""
@@ -16064,16 +16267,28 @@ Examples:
     # =========================================================================
     brain_parser = subparsers.add_parser(
         "brain",
-        help="Manage your digital brain (status, export)",
-        description="View and export your personality graph",
+        help="Manage your digital brain (status, export, ingest)",
+        description="View, export, and enrich your personality graph",
     )
-    brain_parser.add_argument(
-        "action",
-        nargs="?",
-        default="status",
-        choices=["status", "export"],
-        help="Action to perform (default: status)",
+    brain_subparsers = brain_parser.add_subparsers(dest="brain_action")
+
+    # beam brain status
+    brain_subparsers.add_parser("status", help="Show brain coverage statistics")
+
+    # beam brain export
+    brain_subparsers.add_parser("export", help="Export brain to SOUL.md")
+
+    # beam brain ingest <file>
+    ingest_parser = brain_subparsers.add_parser(
+        "ingest",
+        help="Ingest a file to enrich your brain (essays, writing samples)",
     )
+    ingest_parser.add_argument("file", help="Path to file to ingest (.txt, .md, .pdf)")
+    ingest_parser.add_argument(
+        "--label",
+        help="Label for this ingestion (e.g. 'college essay', 'blog post')",
+    )
+
     brain_parser.set_defaults(func=cmd_brain)
 
     # =========================================================================
