@@ -9938,10 +9938,49 @@ class HermesCLI:
 
     def _handle_brain_command(self, cmd: str):
         """Handle /brain — manage your digital brain."""
-        parts = cmd.strip().split(None, 1)
-        sub = parts[1].strip() if len(parts) > 1 else "status"
+        parts = cmd.strip().split(None, 2)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "status"
+        arg = parts[2].strip() if len(parts) > 2 else None
 
-        if sub == "status":
+        if sub == "list":
+            try:
+                from hermes_cli.brain_cmds import cmd_brain_list
+                cmd_brain_list()
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain list error: {e}{_RST}")
+
+        elif sub == "switch":
+            if not arg:
+                _cprint(f"  Usage: /brain switch <name>")
+                return
+            try:
+                from hermes_cli.brain_cmds import cmd_brain_switch
+                cmd_brain_switch(arg)
+            except SystemExit:
+                pass
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain switch error: {e}{_RST}")
+
+        elif sub == "info":
+            try:
+                from hermes_cli.brain_cmds import cmd_brain_info
+                cmd_brain_info(arg)
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain info error: {e}{_RST}")
+
+        elif sub == "remove":
+            if not arg:
+                _cprint(f"  Usage: /brain remove <name>")
+                return
+            try:
+                from hermes_cli.brain_cmds import cmd_brain_remove
+                cmd_brain_remove(arg)
+            except SystemExit:
+                pass
+            except Exception as e:
+                _cprint(f"  {_DIM}Brain remove error: {e}{_RST}")
+
+        elif sub == "status":
             try:
                 import json as _json
                 from tools.brain_tools import brain_status
@@ -9955,6 +9994,7 @@ class HermesCLI:
                         _cprint(f"    {key}: {val}")
             except Exception as e:
                 _cprint(f"  {_DIM}Brain status error: {e}{_RST}")
+
         elif sub == "export":
             try:
                 import json as _json
@@ -9969,8 +10009,9 @@ class HermesCLI:
                         _cprint(f"    {key}: {val}")
             except Exception as e:
                 _cprint(f"  {_DIM}Brain export error: {e}{_RST}")
+
         else:
-            _cprint(f"  Usage: /brain [status|export]")
+            _cprint(f"  Usage: /brain [list|switch|info|remove|status|export]")
 
     def _handle_interview_command(self):
         """Handle /interview — start the adaptive brain-building interview."""
