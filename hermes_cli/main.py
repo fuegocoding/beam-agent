@@ -6759,8 +6759,8 @@ Output ONLY valid JSON with this structure:
             return
 
         # Load existing graph
-        beam_home = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
-        graph_path = beam_home / "brain" / "default" / "personality_graph.json"
+        from brain.paths import get_active_brain_graph_path
+        graph_path = get_active_brain_graph_path()
 
         if graph_path.exists():
             graph = json.loads(graph_path.read_text(encoding="utf-8"))
@@ -6833,6 +6833,31 @@ Output ONLY valid JSON with this structure:
         if extracted.get("voice_dna", {}).get("characteristic_phrases"):
             print(f"  Phrases added: {len(extracted['voice_dna']['characteristic_phrases'])}")
         print(f"\nRun 'beam brain status' to see updated coverage.")
+
+    elif action == "list":
+        from hermes_cli.brain_cmds import cmd_brain_list
+        cmd_brain_list()
+
+    elif action == "switch":
+        name = getattr(args, "name", None)
+        if not name:
+            print("Usage: beam brain switch <name>")
+            return
+        from hermes_cli.brain_cmds import cmd_brain_switch
+        cmd_brain_switch(name)
+
+    elif action == "info":
+        name = getattr(args, "name", None)
+        from hermes_cli.brain_cmds import cmd_brain_info
+        cmd_brain_info(name)
+
+    elif action == "remove":
+        name = getattr(args, "name", None)
+        if not name:
+            print("Usage: beam brain remove <name>")
+            return
+        from hermes_cli.brain_cmds import cmd_brain_remove
+        cmd_brain_remove(name)
 
 def cmd_interview(args):
     """Start the adaptive brain-building interview."""
@@ -12827,7 +12852,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Beam brain commands
-        "brain", "interview",
+        "brain", "interview", "install", "build",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -16300,6 +16325,32 @@ Examples:
         description="Run a multi-pass personality interview",
     )
     interview_parser.set_defaults(func=cmd_interview)
+
+    # =========================================================================
+    # beam install command
+    # =========================================================================
+    from hermes_cli.install_cmd import register_install_command
+    register_install_command(subparsers)
+
+    # =========================================================================
+    # beam build command
+    # =========================================================================
+    from hermes_cli.build_cli import register_build_command
+    register_build_command(subparsers)
+
+    # =========================================================================
+    # beam brain subcommands (list, switch, info, remove)
+    # =========================================================================
+    brain_subparsers.add_parser("list", help="List all installed brains")
+
+    switch_parser = brain_subparsers.add_parser("switch", help="Switch active brain")
+    switch_parser.add_argument("name", help="Name of brain to switch to")
+
+    info_parser = brain_subparsers.add_parser("info", help="Show brain info")
+    info_parser.add_argument("name", nargs="?", help="Brain name (defaults to active)")
+
+    remove_parser = brain_subparsers.add_parser("remove", help="Remove an installed brain")
+    remove_parser.add_argument("name", help="Name of brain to remove")
 
     # =========================================================================
     # Parse and execute
