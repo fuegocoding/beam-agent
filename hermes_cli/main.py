@@ -6633,8 +6633,54 @@ def cmd_brain(args):
 
 def cmd_interview(args):
     """Start the adaptive brain-building interview."""
+    import sys
+    import threading
+    import itertools
+
+    # Spinner animation
+    _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    _THINKING_MSGS = [
+        "Thinking about your answer",
+        "Analyzing your response",
+        "Preparing next question",
+        "Considering what to ask next",
+    ]
+
+    class _Spinner:
+        def __init__(self):
+            self._stop = threading.Event()
+            self._thread = None
+            self._frame = 0
+
+        def start(self, msg="Thinking"):
+            self._stop.clear()
+            self._msg = msg
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+        def _run(self):
+            frames = itertools.cycle(_SPINNER_FRAMES)
+            msg_idx = 0
+            while not self._stop.is_set():
+                frame = next(frames)
+                sys.stdout.write(f"\r  {frame} {self._THINKING_MSGS[msg_idx % len(self._THINKING_MSGS)]}... ")
+                sys.stdout.flush()
+                self._stop.wait(0.1)
+                msg_idx += 1
+
+        def stop(self):
+            self._stop.set()
+            if self._thread:
+                self._thread.join(timeout=0.3)
+            # Clear the spinner line
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
+
+    spinner = _Spinner()
+
     print("Starting brain interview...")
-    print("Answer each question naturally. The interview adapts to your responses.\n")
+    print("Answer each question naturally. The interview adapts to your responses.")
+    print("Type 'quit' to end early.\n")
 
     try:
         from brain.interview_orchestrator import InterviewOrchestrator
@@ -6658,22 +6704,30 @@ def cmd_interview(args):
                 print("Ending interview early.")
                 break
 
-            result = orchestrator.answer(
-                result.get("question_id", ""),
-                result.get("question", ""),
-                answer,
-                result.get("domain", ""),
-            )
+            # Show spinner while LLM thinks
+            spinner.start("Thinking about your answer")
+            try:
+                result = orchestrator.answer(
+                    result.get("question_id", ""),
+                    result.get("question", ""),
+                    answer,
+                    result.get("domain", ""),
+                )
+            finally:
+                spinner.stop()
 
             if result.get("status") == "complete":
                 print(f"\n{result.get('summary', 'Interview complete!')}")
-                print("\nBuilding your brain...")
 
-                # Build brain
-                from brain.brain_builder import BrainBuilder
-                builder = BrainBuilder()
-                interview_data = orchestrator.get_full_transcript()
-                build_result = builder.extract(interview_data)
+                # Show spinner while building brain
+                spinner.start("Building your brain from interview data")
+                try:
+                    from brain.brain_builder import BrainBuilder
+                    builder = BrainBuilder()
+                    interview_data = orchestrator.get_full_transcript()
+                    build_result = builder.extract(interview_data)
+                finally:
+                    spinner.stop()
 
                 if build_result.get("error"):
                     print(f"Brain build error: {build_result['error']}")
@@ -6702,26 +6756,27 @@ def cmd_interview(args):
                 if clone_name:
                     graph["clone_name"] = clone_name
                     graph_path.write_text(json.dumps(graph, indent=2))
-                    # Save name to beam config
                     name_file = beam_home / "clone_name.txt"
                     name_file.write_text(clone_name, encoding="utf-8")
                     print(f"\nClone named: {clone_name}")
 
                 # Generate SOUL.md
-                from hermes_constants import get_hermes_home
-                hermes_home = get_hermes_home()
-                hermes_home.mkdir(parents=True, exist_ok=True)
+                spinner.start("Generating SOUL.md")
                 try:
+                    from hermes_constants import get_hermes_home
+                    hermes_home = get_hermes_home()
+                    hermes_home.mkdir(parents=True, exist_ok=True)
                     from brain.soul_generator import generate_soul_md
                     soul_content = generate_soul_md(graph, hermes_home / "SOUL.md")
-                    # Prepend clone name to SOUL.md if set
                     if clone_name:
                         named_content = f"# {clone_name}'s Soul\n\n" + soul_content.split("# Soul", 1)[-1] if "# Soul" in soul_content else soul_content
                         (hermes_home / "SOUL.md").write_text(named_content, encoding="utf-8")
-                    print(f"SOUL.md generated at {hermes_home / 'SOUL.md'}")
                 except Exception as e:
                     print(f"SOUL.md generation warning: {e}")
+                finally:
+                    spinner.stop()
 
+                print(f"SOUL.md generated at {hermes_home / 'SOUL.md'}")
                 print(f"Brain saved to {graph_path}")
                 if clone_name:
                     print(f"\n{clone_name} is ready. Run 'beam' to talk to your clone.")
