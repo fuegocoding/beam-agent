@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Beam Agent" width="100%">
-</p>
-
 # Beam Agent
 
 <p align="center">
