@@ -120,10 +120,11 @@ def _download_brain(slug: str, output_path: Path, token: str | None = None) -> d
     # Free / community brain — request an install token from the API
     auth_token = _get_auth_token()
     if not auth_token:
-        print(
-            "Error: No auth token found. Please log in first or set BEAM_AUTH_TOKEN.",
-            file=sys.stderr,
-        )
+        print("Error: BEAM_AUTH_TOKEN environment variable required for installing marketplace brains.", file=sys.stderr)
+        print("  1. Go to https://beammind.dev/dashboard/settings", file=sys.stderr)
+        print("  2. Copy your CLI token from the 'CLI Access' section", file=sys.stderr)
+        print("  3. Run: export BEAM_AUTH_TOKEN=<your-token>", file=sys.stderr)
+        print("  4. Then: beam install creative-writer", file=sys.stderr)
         sys.exit(1)
 
     url = f"{api_url}/api/v1/marketplace/{slug}/install-token"
