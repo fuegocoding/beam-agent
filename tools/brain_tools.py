@@ -1,22 +1,17 @@
 """Brain tools for beam-agent.
 
 Provides brain_search, brain_export, and brain_status tools
-that bridge to the Rust brain-runtime binary.
+that work with both local and remote (proxy) brains via the
+brain resolver abstraction.
 """
 
 import json
 import os
 from pathlib import Path
 
+from brain.brain_resolver import get_active_brain_interface
+
 BEAM_HOME = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
-
-
-def _load_graph(user_id: str = "default") -> dict:
-    """Load the personality graph from disk."""
-    graph_path = BEAM_HOME / "brain" / user_id / "personality_graph.json"
-    if graph_path.exists():
-        return json.loads(graph_path.read_text(encoding="utf-8"))
-    return {}
 
 
 def brain_search(query: str, trust_level: str = "owner", brain_power: str = "standard") -> str:
@@ -30,14 +25,8 @@ def brain_search(query: str, trust_level: str = "owner", brain_power: str = "sta
     Returns:
         JSON string with matching nodes and edges from your personality graph.
     """
-    from brain.brain_retriever import BrainRetriever
-
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"error": "No brain data found. Run the interview first with 'build-my-brain' skill."})
-
-    retriever = BrainRetriever()
-    result = retriever.search(query, graph, trust_level, brain_power)
+    brain = get_active_brain_interface()
+    result = brain.search(query, trust_level, brain_power)
     return json.dumps(result, indent=2)
 
 
@@ -47,30 +36,31 @@ def brain_export() -> str:
     Returns:
         JSON string with the path to exported files.
     """
-    from brain.brain_retriever import BrainRetriever
     from brain.md_memory import MDMemory
 
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"error": "No brain data found. Run the interview first."})
-
+    brain = get_active_brain_interface()
     memory = MDMemory()
-    retriever = BrainRetriever()
 
-    retriever.export_soul(graph)
-    export_path = memory.write_brain_export(graph)
+    soul_result = brain.export_soul()
+    soul_md = soul_result.get("soul_md", "")
 
-    if graph.get("voice_dna") or graph.get("work_dna"):
-        memory.write_style(
-            graph.get("voice_dna", {}),
-            graph.get("work_dna", {}),
-        )
+    # Write SOUL.md to Hermes home
+    from hermes_constants import get_hermes_home
+    hermes_home = get_hermes_home()
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    soul_path = hermes_home / "SOUL.md"
+    soul_path.write_text(soul_md, encoding="utf-8")
+
+    # For local brains, also export the full graph breakdown
+    # For proxy brains, we only have the SOUL.md
+    export_path = memory.brain_export_dir / "brain-summary.md"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_text(soul_md, encoding="utf-8")
 
     return json.dumps({
         "status": "success",
-        "brain_export": export_path,
-        "soul_md": str(BEAM_HOME / "SOUL.md"),
-        "style_md": str(memory.style_file),
+        "brain_export": str(export_path),
+        "soul_md": str(soul_path),
     }, indent=2)
 
 
@@ -80,12 +70,6 @@ def brain_status() -> str:
     Returns:
         JSON string with brain statistics and coverage.
     """
-    from brain.brain_retriever import BrainRetriever
-
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"status": "empty", "message": "No brain data found. Run the interview first."})
-
-    retriever = BrainRetriever()
-    stats = retriever.get_stats(graph)
+    brain = get_active_brain_interface()
+    stats = brain.get_stats()
     return json.dumps(stats, indent=2)

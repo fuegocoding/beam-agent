@@ -6631,6 +6631,13 @@ def cmd_brain(args):
             print(f"Brain export error: {e}")
 
     elif action == "ingest":
+        from brain.brain_resolver import is_proxy_brain
+
+        if is_proxy_brain():
+            print("Writing sample ingestion is not supported for remote marketplace brains.")
+            print("The full personality graph stays server-side and cannot be modified locally.")
+            return
+
         file_path = getattr(args, "file", None)
         label = getattr(args, "label", None)
 

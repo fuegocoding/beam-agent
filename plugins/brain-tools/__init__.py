@@ -1,27 +1,22 @@
 """brain-tools plugin — digital brain integration for beam-agent.
 
 Registers brain_search, brain_export, and brain_status tools
-that bridge to the Rust brain-runtime binary.
+that work with both local and remote (proxy) brains via the
+brain resolver abstraction.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
+from brain.brain_resolver import get_active_brain_interface, is_proxy_brain
+
 logger = logging.getLogger(__name__)
 
-BEAM_HOME = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
-
-
-def _load_graph(user_id: str = "default") -> dict:
-    graph_path = BEAM_HOME / "brain" / user_id / "personality_graph.json"
-    if graph_path.exists():
-        return json.loads(graph_path.read_text(encoding="utf-8"))
-    return {}
+BEAM_HOME = Path.home() / ".beam"
 
 
 def _brain_search_handler(args: dict, **kw: Any) -> str:
@@ -29,67 +24,61 @@ def _brain_search_handler(args: dict, **kw: Any) -> str:
     trust_level = args.get("trust_level", "owner")
     brain_power = args.get("brain_power", "standard")
 
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"error": "No brain data found. Run the interview first."})
-
-    from brain.brain_retriever import BrainRetriever
-    retriever = BrainRetriever()
-    result = retriever.search(query, graph, trust_level, brain_power)
+    brain = get_active_brain_interface()
+    result = brain.search(query, trust_level, brain_power)
     return json.dumps(result, indent=2)
 
 
 def _brain_export_handler(args: dict, **kw: Any) -> str:
-    from brain.brain_retriever import BrainRetriever
     from brain.md_memory import MDMemory
-    from brain.soul_generator import generate_soul_md
     from hermes_constants import get_hermes_home
 
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"error": "No brain data found. Run the interview first."})
-
+    brain = get_active_brain_interface()
     memory = MDMemory()
-    retriever = BrainRetriever()
-    retriever.export_soul(graph)
-    export_path = memory.write_brain_export(graph)
 
-    if graph.get("voice_dna") or graph.get("work_dna"):
-        memory.write_style(
-            graph.get("voice_dna", {}),
-            graph.get("work_dna", {}),
-        )
+    soul_result = brain.export_soul()
+    soul_md = soul_result.get("soul_md", "")
 
-    # Also update SOUL.md in Hermes home
+    # Write SOUL.md in Hermes home
     hermes_home = get_hermes_home()
     hermes_home.mkdir(parents=True, exist_ok=True)
+    soul_path = hermes_home / "SOUL.md"
     try:
-        generate_soul_md(graph, hermes_home / "SOUL.md")
+        soul_path.write_text(soul_md, encoding="utf-8")
     except Exception as exc:
-        logger.warning("Failed to generate SOUL.md: %s", exc)
+        logger.warning("Failed to write SOUL.md: %s", exc)
+
+    # Export summary to brain-export dir
+    export_path = memory.brain_export_dir / "brain-summary.md"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        export_path.write_text(soul_md, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to write brain export: %s", exc)
 
     return json.dumps({
         "status": "success",
-        "brain_export": export_path,
-        "soul_md": str(hermes_home / "SOUL.md"),
-        "style_md": str(memory.style_file),
+        "brain_export": str(export_path),
+        "soul_md": str(soul_path),
     }, indent=2)
 
 
 def _brain_status_handler(args: dict, **kw: Any) -> str:
-    from brain.brain_retriever import BrainRetriever
-
-    graph = _load_graph()
-    if not graph:
-        return json.dumps({"status": "empty", "message": "No brain data found. Run the interview first."})
-
-    retriever = BrainRetriever()
-    stats = retriever.get_stats(graph)
+    brain = get_active_brain_interface()
+    stats = brain.get_stats()
     return json.dumps(stats, indent=2)
 
 
 def _check_brain_available() -> bool:
-    return (BEAM_HOME / "brain").exists()
+    """Check if any brain (local or proxy) is configured."""
+    from brain.paths import get_active_brain_name, get_brain_path
+    brain_path = get_brain_path(get_active_brain_name())
+    # Local brain graph or proxy config
+    if (brain_path / "personality_graph.json").exists() or (brain_path / "brain_config.json").exists():
+        return True
+    # Fallback: old path (pre-migration)
+    old_path = Path.home() / ".beam" / "brain" / get_active_brain_name() / "personality_graph.json"
+    return old_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +185,6 @@ def _on_post_tool_call(
     # For continue_interview, only regenerate if brain was just built
     if tool_name == "continue_interview":
         try:
-            import json
             data = json.loads(result) if isinstance(result, str) else result
             if not data.get("brain_built"):
                 return
@@ -204,14 +192,14 @@ def _on_post_tool_call(
             return
 
     try:
-        from brain.soul_generator import generate_soul_md
-        from hermes_constants import get_hermes_home
-
-        graph = _load_graph()
-        if graph:
+        brain = get_active_brain_interface()
+        soul_result = brain.export_soul()
+        soul_md = soul_result.get("soul_md", "")
+        if soul_md:
+            from hermes_constants import get_hermes_home
             hermes_home = get_hermes_home()
             hermes_home.mkdir(parents=True, exist_ok=True)
-            generate_soul_md(graph, hermes_home / "SOUL.md")
+            (hermes_home / "SOUL.md").write_text(soul_md, encoding="utf-8")
             logger.info("Auto-updated SOUL.md after %s", tool_name)
     except Exception as exc:
         logger.debug("SOUL.md auto-update failed: %s", exc)

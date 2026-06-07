@@ -98,7 +98,7 @@ def cmd_brain_info(name: str | None = None):
         with open(config_path) as f:
             cfg = json.load(f)
         if cfg.get("type") == "proxy":
-            print(f"Type: Paid (API proxy)")
+            print(f"Type: API proxy (full graph stays server-side)")
             print(f"API slug: {cfg.get('slug')}")
     elif graph_path.exists():
         try:
@@ -172,19 +172,30 @@ def cmd_brain_remove(name: str):
 
 
 def _regenerate_soul(brain_name: str):
-    """Regenerate SOUL.md for a brain."""
-    from brain.paths import get_brain_graph_path, get_brain_soul_path
-    from brain.soul_generator import generate_soul_md
+    """Regenerate SOUL.md for a brain (local or proxy)."""
+    from brain.brain_resolver import resolve_brain
+    from brain.paths import get_brain_soul_path
+    from hermes_constants import get_hermes_home
 
-    graph_path = get_brain_graph_path(brain_name)
-    if not graph_path.exists():
+    brain = resolve_brain(brain_name)
+    soul_md = brain.get_soul()
+    if not soul_md:
         return
 
-    with open(graph_path, encoding="utf-8") as f:
-        graph = json.load(f)
-
+    # Write to brain-specific path
     soul_path = get_brain_soul_path(brain_name)
-    generate_soul_md(graph, str(soul_path))
+    try:
+        soul_path.write_text(soul_md, encoding="utf-8")
+    except Exception:
+        pass
+
+    # Also update the active SOUL.md in Hermes home
+    hermes_home = get_hermes_home()
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    try:
+        (hermes_home / "SOUL.md").write_text(soul_md, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def register_brain_subcommands(existing_subcommands: list[str] | None = None):
