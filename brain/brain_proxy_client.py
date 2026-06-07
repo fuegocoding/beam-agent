@@ -48,6 +48,10 @@ class BrainProxyClient:
                 resp = client.post(url, json=payload, headers=self._headers())
                 resp.raise_for_status()
                 data = resp.json()
+                # New marketplace proxy returns full dict with nodes/context
+                if isinstance(data, dict) and "nodes" in data:
+                    return data
+                # Legacy paid-brain proxy returns list under "results"
                 return data.get("results", [])
         except httpx.ConnectError:
             raise ConnectionError(
