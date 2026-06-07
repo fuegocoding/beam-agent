@@ -1,21 +1,69 @@
-MIT License
+Beam Agent Proprietary Software License
 
-Copyright (c) 2025 Nous Research
+Copyright (c) 2025 Fuego Coding. All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software and associated documentation files (the "Software") are the
+exclusive property of Fuego Coding. The Software includes all original code,
+modifications, additions, enhancements, and derivative works created by
+Fuego Coding based upon or incorporating third-party components.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. OWNERSHIP
+   All title, ownership rights, and intellectual property rights in and to
+the Software, including but not limited to the code, documentation, user
+interfaces, trade secrets, and know-how, are and shall remain the exclusive
+property of Fuego Coding. This License does not convey to you any rights of
+ownership in or related to the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+2. RESTRICTIONS
+   You may not, without express prior written permission from Fuego Coding:
+   a) Copy, reproduce, or duplicate the Software, in whole or in part.
+   b) Modify, adapt, translate, or create derivative works based on the
+      Software.
+   c) Distribute, publish, display, sublicense, lease, lend, sell, rent, or
+      transfer the Software to any third party.
+   d) Reverse-engineer, decompile, disassemble, or otherwise attempt to derive
+      the source code of the Software, except to the extent expressly permitted
+      by applicable law.
+   e) Remove or alter any proprietary notices, labels, or marks on the Software.
+   f) Use the Software for any purpose other than as expressly authorized under
+      a separate commercial agreement with Fuego Coding.
+
+3. AUTHORIZED USE
+   Use of the Software is permitted only under a valid commercial license
+agreement, subscription, or other written authorization granted by Fuego Coding.
+Unauthorized access, use, or deployment of the Software is strictly prohibited
+and may result in civil and criminal penalties.
+
+4. THIRD-PARTY COMPONENTS
+   The Software may incorporate or be derived from third-party open-source
+software, including the Hermes agent framework by Nous Research, which is
+licensed under the MIT License. Such third-party components remain subject to
+their original license terms. The proprietary restrictions in this License apply
+to the Software as a whole and to all original contributions, modifications,
+and additions made by Fuego Coding, and do not supersede the rights granted
+under the original open-source licenses of underlying components. For the MIT
+License text applicable to the Hermes framework and other third-party
+components, see the NOTICE file included with this distribution.
+
+5. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+FUEGO CODING BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION
+   This License is effective until terminated. It will terminate immediately
+without notice if you fail to comply with any term or condition. Upon
+termination, you must destroy all copies of the Software and all of its
+component parts.
+
+7. GOVERNING LAW
+   This License shall be governed by and construed in accordance with the laws
+of the jurisdiction in which Fuego Coding is established, without regard to
+its conflict of law principles.
+
+By using, accessing, or distributing the Software, you acknowledge that you
+have read this License, understand it, and agree to be bound by its terms and
+conditions.

@@ -19,8 +19,8 @@ readme = "README.md"
 # build. Raise the ceiling once our Rust transitives ship cp314 wheels.
 requires-python = ">=3.11,<3.14"
 authors = [{ name = "Nous Research" }]
-license = "MIT"
-license-files = ["LICENSE"]
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive

@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/fuegocoding/beam-agent"><img src="https://img.shields.io/badge/GitHub-beam--agent-blue?style=for-the-badge" alt="GitHub"></a>
-  <a href="https://github.com/fuegocoding/beam-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/fuegocoding/beam-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License: Proprietary"></a>
 </p>
 
 **Your personal AI digital clone.** Beam builds a deep understanding of who you are through an adaptive interview, stores it as a personality graph, and deploys a 24/7 agent that thinks like you across all messaging platforms.
@@ -216,6 +216,7 @@ python -m pytest tests/beam/ -v
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Proprietary — All rights reserved. See [LICENSE](LICENSE) for terms.
 
 Built on [hermes-agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com).
+The original Hermes framework is licensed under the MIT License (see [NOTICE](NOTICE)).
