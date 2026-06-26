@@ -224,7 +224,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # --- Beam brain commands ---
     CommandDef("brain", "Manage your digital brain (status, export)", "Tools & Skills",
-               subcommands=("status", "export"), args_hint="[status|export]"),
+               subcommands=("status", "export", "list", "switch", "info", "remove", "update"),
+               args_hint="[status|export|list|switch|info|remove|update]"),
     CommandDef("interview", "Start adaptive interview to build your digital brain", "Tools & Skills"),
 ]
 

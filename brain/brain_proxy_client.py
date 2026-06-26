@@ -1,33 +1,85 @@
-"""Client for accessing paid brains via the Beam API proxy.
+"""Local-only brain access (legacy compatibility shim).
 
-When a user installs a paid brain, the brain data is NOT downloaded locally.
-Instead, all queries go through the beam_mind API proxy using an install token.
+The agent used to proxy every search/soul/context query through the Beam
+API when a paid brain was installed. That meant no offline use, no
+guarantees about latency, and the brain was useless without a working
+connection.
+
+That flow has been removed. The marketplace now ships every brain as a
+full personality_graph.json downloaded once at install time. The class
+below is kept so any 3rd-party code that imported `BrainProxyClient`
+keeps working, but every method now reads from disk. There is no
+network I/O — that was the whole point of removing the proxy.
+
+New code should use `brain.brain_resolver.resolve_brain` or
+`brain.brain_retriever.BrainRetriever` directly.
 """
 import json
 import os
-from typing import Any
+from pathlib import Path
 
-import httpx
+from brain.paths import (
+    get_active_brain_graph_path,
+    get_active_brain_name,
+)
 
 
-# ── Configuration ─────────────────────────────────────────────────────
+class _NetworkCallsRemoved(RuntimeError):
+    """The brain subsystem no longer talks to the Beam API at runtime.
 
-API_URL = os.environ.get("BEAM_API_URL", "https://api.openbeam.me")
+    If you see this, you're either:
+      - Trying to install a brain that doesn't exist (run
+        `beam install <slug>` first), or
+      - Re-introducing a network call somewhere in the brain code path
+        (don't — brains are local-only).
+    """
+
+
+def _load_local_graph() -> dict:
+    """Load the active brain's personality graph from disk."""
+    path = get_active_brain_graph_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No brain installed at {path}. Run 'beam install <slug>' first."
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 class BrainProxyClient:
-    """Client for querying a paid brain via the Beam API."""
+    """Reads from the locally-downloaded graph. No network involved.
 
-    def __init__(self, slug: str, token: str, api_url: str | None = None):
+    The class signature is preserved so any lingering imports keep
+    working, but the `token` and `api_url` arguments are ignored — the
+    active brain is whatever the user has set via `beam brain switch`.
+    """
+
+    def __init__(self, slug: str, token: str | None = None, api_url: str | None = None):
+        # slug/token/api_url are accepted for backwards-compat but ignored.
         self.slug = slug
-        self.token = token
-        self.api_url = api_url or API_URL
+        self._token = token
+        self._api_url = api_url
+        self._graph = _load_local_graph()
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
+    def _enforce_offline(self) -> None:
+        """Refuse to make network calls. The brain is local now."""
+        raise _NetworkCallsRemoved(
+            "BrainProxyClient no longer talks to the Beam API. "
+            f"Active brain '{get_active_brain_name()}' is read from disk. "
+            "If you need fresh data, re-run `beam install <slug>`."
+        )
+
+    def _search_local(
+        self,
+        query: str,
+        trust_level: str = "visitor",
+        brain_power: str = "standard",
+    ) -> list[dict]:
+        from brain.brain_retriever import BrainRetriever
+        return (
+            BrainRetriever()
+            .search(query, self._graph, trust_level, brain_power)
+            .get("nodes", [])
+        )
 
     def search(
         self,
@@ -35,82 +87,25 @@ class BrainProxyClient:
         trust_level: str = "visitor",
         brain_power: str = "standard",
     ) -> list[dict]:
-        """Search the brain for relevant nodes."""
-        url = f"{self.api_url}/api/v1/brain-proxy/{self.slug}/search"
-        payload = {
-            "query": query,
-            "trust_level": trust_level,
-            "brain_power": brain_power,
-        }
-
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(url, json=payload, headers=self._headers())
-                resp.raise_for_status()
-                data = resp.json()
-                # New marketplace proxy returns full dict with nodes/context
-                if isinstance(data, dict) and "nodes" in data:
-                    return data
-                # Legacy paid-brain proxy returns list under "results"
-                return data.get("results", [])
-        except httpx.ConnectError:
-            raise ConnectionError(
-                "Cannot connect to Beam API. Paid brains require an internet connection."
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                raise PermissionError("Invalid or expired install token.")
-            elif e.response.status_code == 402:
-                raise PermissionError("Purchase is no longer active or subscription expired.")
-            elif e.response.status_code == 404:
-                raise FileNotFoundError(f"Brain '{self.slug}' not found on marketplace.")
-            else:
-                raise RuntimeError(f"API error: {e.response.status_code} - {e.response.text}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to query brain: {e}")
+        """Search the local brain. No network involved."""
+        return self._search_local(query, trust_level, brain_power)
 
     def get_soul(self) -> str:
-        """Get the SOUL.md content for this brain."""
-        url = f"{self.api_url}/api/v1/brain-proxy/{self.slug}/soul"
-
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.get(url, headers=self._headers())
-                resp.raise_for_status()
-                return resp.text
-        except httpx.ConnectError:
-            raise ConnectionError(
-                "Cannot connect to Beam API. Paid brains require an internet connection."
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                raise PermissionError("Invalid or expired install token.")
-            else:
-                raise RuntimeError(f"API error: {e.response.status_code}")
+        """Return the locally-stored SOUL.md, or build one from the graph."""
+        from brain.soul_generator import generate_soul_md
+        soul_path = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam")) / "SOUL.md"
+        if soul_path.exists():
+            return soul_path.read_text(encoding="utf-8")
+        return generate_soul_md(self._graph)
 
     def get_context(self) -> dict:
-        """Get behavioral context for this brain."""
-        url = f"{self.api_url}/api/v1/brain-proxy/{self.slug}/context"
-
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.get(url, headers=self._headers())
-                resp.raise_for_status()
-                return resp.json()
-        except httpx.ConnectError:
-            raise ConnectionError(
-                "Cannot connect to Beam API. Paid brains require an internet connection."
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                raise PermissionError("Invalid or expired install token.")
-            else:
-                raise RuntimeError(f"API error: {e.response.status_code}")
+        """Return behavioral context for the active brain (computed locally)."""
+        from brain.brain_retriever import BrainRetriever
+        return BrainRetriever().build_context(self._graph)
 
     def ping(self) -> bool:
-        """Check if the brain proxy is accessible."""
-        try:
-            self.get_context()
-            return True
-        except Exception:
-            return False
+        """Returns True iff a local brain is installed and readable."""
+        return get_active_brain_graph_path().exists()
+
+
+__all__ = ["BrainProxyClient"]

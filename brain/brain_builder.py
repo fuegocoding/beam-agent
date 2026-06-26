@@ -1,98 +1,38 @@
-"""Brain builder — Python-native personality extraction using LLM.
+"""Brain builder — offline personality graph construction.
 
-Extracts a PersonalityGraph from interview transcript using call_llm.
-No Rust binary dependency for extraction logic.
+Builds a PersonalityGraph from an interview transcript *without* calling
+an LLM. The brain subsystem is fully offline once the data is on disk;
+the heavy lifting of turning free-form answers into a structured graph
+is now expected to happen either:
+
+  1. At publish time (in beam_mind, where authors can use any model they
+     want to build a graph from their own interview), or
+  2. Manually by editing personality_graph.json.
+
+What this module does offline:
+  - Captures the interview transcript verbatim as memory chunks so the
+    brain is still queryable (BrainRetriever indexes memories).
+  - Fills in a short user_summary from the first ~320 chars of the
+    transcript.
+  - Merges new data into an existing graph using a deterministic,
+    no-LLM dedupe pass.
 """
 
 import json
 import logging
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_PROMPT = """You are a personality analyst. Extract a structured personality graph from this interview transcript.
-
-OUTPUT FORMAT — follow this EXACTLY. Every field is required. Use empty arrays [] for missing data.
-
-{
-  "user_summary": "2-3 sentence summary of who this person is, in first person",
-  "traits": [
-    {"name": "trait name", "strength": 0.0 to 1.0, "summary": "one sentence"}
-  ],
-  "beliefs": [
-    {"name": "belief name", "confidence": 0.0 to 1.0, "summary": "one sentence"}
-  ],
-  "values": [
-    {"name": "value name", "importance": 0.0 to 1.0, "summary": "one sentence"}
-  ],
-  "boundaries": [],
-  "life_events": [],
-  "people": [
-    {"name": "name", "relationship": "how they relate", "significance": "why they matter"}
-  ],
-  "voice_dna": {
-    "characteristic_phrases": ["exact phrases they used"],
-    "phrases_to_avoid": [],
-    "humor_style": "description",
-    "response_length_pattern": "description",
-    "formality_range": "description",
-    "storytelling_style": "description"
-  },
-  "work_dna": {
-    "decomposition_style": "how they break down problems",
-    "debugging_approach": "how they debug",
-    "risk_posture": "relationship with risk",
-    "delegation_style": "how they delegate",
-    "documentation_habit": "how they document"
-  },
-  "emotional_profile": {
-    "triggers": [{"stimulus": "what triggers", "reaction": "how they react", "intensity": 0.0 to 1.0}],
-    "energy_sources": ["what gives energy"],
-    "energy_drains": ["what drains energy"],
-    "reaction_speed": "fast/slow/variable",
-    "recovery_pattern": "how they recover from setbacks"
-  }
-}
-
-RULES:
-- traits: 3-8 personality traits with DIFFERENT names
-- beliefs: 3-8 core beliefs, NOT traits. Beliefs are opinions/convictions about the world.
-- values: 3-6 core values. Values are principles they live by.
-- voice_dna: extract from HOW they spoke, not WHAT they believe
-- emotional_profile: extract triggers, energy sources/drains from their answers
-- Use their exact words where possible
-- All arrays must contain objects with the specified fields
-- Do NOT nest data — keep it flat as shown above"""
-
-
-def _call_llm(system: str, user: str, temperature: float = 0.3, max_tokens: int = 8000) -> str:
-    """Make a one-shot LLM call via Hermes auxiliary client."""
-    from agent.auxiliary_client import call_llm
-    response = call_llm(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-        timeout=180.0,
-    )
-    return (response.choices[0].message.content or "").strip()
-
-
-def _parse_json(text: str) -> dict:
-    """Extract JSON from LLM response, handling markdown code blocks."""
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-    return json.loads(text)
-
 
 def _normalize_graph(graph: dict) -> dict:
-    """Normalize LLM output to expected format."""
+    """Normalize graph output to the expected shape.
 
-    # user_summary from various sources
+    Kept here as a safety net for graphs produced by older versions or
+    external tooling that emit slightly different field names. Pure data
+    manipulation, no model calls.
+    """
+
     if not graph.get("user_summary"):
         for path in [
             ("core_identity",),
@@ -109,7 +49,6 @@ def _normalize_graph(graph: dict) -> dict:
                 graph["user_summary"] = val
                 break
 
-    # traits from values/identity arrays
     if not graph.get("traits"):
         traits = []
         for source_key in ["identity", "core_identity"]:
@@ -124,7 +63,6 @@ def _normalize_graph(graph: dict) -> dict:
         if traits:
             graph["traits"] = traits
 
-    # values from various sources
     if not graph.get("values"):
         values = []
         for source_key in ["identity", "core_identity"]:
@@ -139,7 +77,6 @@ def _normalize_graph(graph: dict) -> dict:
         if values:
             graph["values"] = values
 
-    # beliefs — handle string or list of strings
     beliefs_raw = graph.get("beliefs", [])
     if isinstance(beliefs_raw, str):
         graph["beliefs"] = [{"name": beliefs_raw, "confidence": 0.8, "summary": beliefs_raw}]
@@ -152,10 +89,8 @@ def _normalize_graph(graph: dict) -> dict:
                 normalized.append(b)
         graph["beliefs"] = normalized
 
-    # emotional_profile from multiple possible sources
     if not graph.get("emotional_profile") or not graph.get("emotional_profile", {}).get("energy_sources"):
         result = graph.setdefault("emotional_profile", {})
-        # Try emotional_triggers
         ep = graph.get("emotional_triggers", {})
         if isinstance(ep, dict):
             drains = ep.get("drains", ep.get("energy_drains", []))
@@ -168,16 +103,13 @@ def _normalize_graph(graph: dict) -> dict:
                 recharges = [recharges]
             if recharges and not result.get("energy_sources"):
                 result["energy_sources"] = recharges
-        # Try interaction_patterns
         ip = graph.get("interaction_patterns", {})
         if isinstance(ip, dict) and not result.get("recovery_pattern"):
             result["recovery_pattern"] = str(ip)
-        # Try personality_indicators as triggers
         pi = graph.get("personality_indicators", {})
         if isinstance(pi, dict) and not result.get("triggers"):
             result["triggers"] = [{"stimulus": k, "reaction": v, "intensity": 0.5} for k, v in pi.items() if isinstance(v, str)]
 
-    # work_dna from work_style or work_approach
     if not graph.get("work_dna") or not graph.get("work_dna", {}).get("decomposition_style"):
         for ws_key in ["work_style", "work_approach"]:
             ws = graph.get(ws_key, {})
@@ -198,18 +130,15 @@ def _normalize_graph(graph: dict) -> dict:
                 if ws.get("bug_fixing") and not wd.get("debugging_approach"):
                     wd["debugging_approach"] = ws["bug_fixing"]
 
-    # people from relationships (handle nested significant_people array)
     if not graph.get("people"):
         people = []
         rels = graph.get("relationships", {})
         if isinstance(rels, dict):
-            # Handle significant_people array
             for person in rels.get("significant_people", []):
                 if isinstance(person, dict):
                     name = person.get("role", person.get("name", "Unknown"))
                     significance = person.get("impact", person.get("description", person.get("lesson", "")))
                     people.append({"name": name, "relationship": name, "significance": significance})
-            # Handle flat relationships
             for key, val in rels.items():
                 if key not in ("significant_people", "key_influences", "trust_approach", "relationship_learning") and isinstance(val, str):
                     people.append({"name": key, "relationship": key, "significance": val})
@@ -221,7 +150,6 @@ def _normalize_graph(graph: dict) -> dict:
 
 def _validate_graph(graph: dict) -> dict:
     """Ensure graph has required fields with defaults."""
-    # Normalize: if LLM returned nested format, flatten it
     graph = _normalize_graph(graph)
 
     defaults = {
@@ -231,6 +159,7 @@ def _validate_graph(graph: dict) -> dict:
         "values": [],
         "boundaries": [],
         "life_events": [],
+        "memories": [],
         "people": [],
         "voice_dna": {
             "characteristic_phrases": [],
@@ -265,76 +194,145 @@ def _validate_graph(graph: dict) -> dict:
     return graph
 
 
+def _summary_from_transcript(transcript: str, max_chars: int = 320) -> str:
+    """Pull a short summary from the first substantive sentence of a transcript."""
+    if not transcript:
+        return ""
+    text = transcript.strip().replace("\n\n", " ").replace("\n", " ")
+    # Skip past the first "Q:/A:" prefix if present
+    for prefix in ("Q:", "A:", "Question:", "Answer:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].lstrip(" :.-")
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    last_period = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+    if last_period > max_chars // 2:
+        return cut[: last_period + 1]
+    return cut.rstrip() + "..."
+
+
+def _chunk_text(text: str, target_chars: int = 2000, max_chunks: int = 12) -> list[str]:
+    """Split text into roughly target_chars-sized chunks, preferring paragraph boundaries."""
+    if not text:
+        return []
+    if len(text) <= target_chars:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining and len(chunks) < max_chunks:
+        if len(remaining) <= target_chars:
+            chunks.append(remaining)
+            break
+        window = remaining[: target_chars * 2]
+        best = -1
+        for sep in ("\n\n", "\n", ". ", "? ", "! "):
+            idx = window.rfind(sep, target_chars // 2, target_chars * 2)
+            if idx > best:
+                best = idx
+        if best <= 0:
+            best = target_chars
+        else:
+            best += len("\n\n")
+        chunks.append(remaining[:best].strip())
+        remaining = remaining[best:].strip()
+    return chunks
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class BrainBuilder:
-    """Builds a PersonalityGraph from interview data using LLM."""
+    """Builds a PersonalityGraph from interview data — offline only.
+
+    The previous implementation called an LLM to extract structured
+    fields from the free-form transcript. That required an API call for
+    every interview, which violated the offline-only contract of the
+    brain subsystem. The new approach stores the transcript as memory
+    chunks and derives a short user_summary locally; structured
+    extraction is expected to happen upstream (at publish time in
+    beam_mind, or by hand-editing the JSON).
+    """
 
     def extract(self, interview_data: dict, existing_graph: dict = None) -> dict:
-        """Extract personality graph from interview data."""
-        transcript = interview_data.get("transcript", "")
+        """Build a personality graph from interview data.
+
+        Returns a graph with:
+          - user_summary: short excerpt from the transcript
+          - memories: one entry per transcript chunk
+          - raw_transcript: the full transcript as a top-level string
+            (BrainRetriever indexes this for keyword search)
+          - all other structured fields left empty (or merged from
+            existing_graph if provided)
+        """
+        transcript = interview_data.get("transcript", "") if isinstance(interview_data, dict) else ""
         if not transcript:
-            answers = interview_data.get("answers", [])
+            answers = interview_data.get("answers", []) if isinstance(interview_data, dict) else []
             transcript = "\n\n".join(
                 f"[{a.get('domain', 'unknown')}] Q: {a['question']}\nA: {a['answer']}"
                 for a in answers
+                if isinstance(a, dict) and a.get("answer")
             )
 
         if not transcript:
             return {"error": "No interview data to extract from"}
 
-        user_prompt = f"Interview transcript:\n\n{transcript}"
+        graph: dict = {}
         if existing_graph:
-            user_prompt += f"\n\nExisting personality graph (merge new data into this):\n{json.dumps(existing_graph, indent=2)}"
+            graph = json.loads(json.dumps(existing_graph))
 
-        try:
-            result_text = _call_llm(
-                "You are a personality extraction system. Output ONLY valid JSON.",
-                user_prompt,
-                temperature=0.2,
-                max_tokens=8000,
-            )
-            graph = _parse_json(result_text)
-            graph = _validate_graph(graph)
-            return {"graph": graph}
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse LLM extraction output: %s", e)
-            # Try once more with a stricter prompt
-            try:
-                retry_text = _call_llm(
-                    "Output ONLY valid JSON. No explanation, no markdown fences.",
-                    f"Extract personality data from this transcript as JSON:\n\n{transcript[:6000]}",
-                    temperature=0.1,
-                    max_tokens=8000,
-                )
-                graph = _parse_json(retry_text)
-                graph = _validate_graph(graph)
-                return {"graph": graph}
-            except Exception as e2:
-                logger.error("Retry also failed: %s", e2)
-                return {"error": f"Extraction failed: {e2}"}
-        except Exception as e:
-            logger.error("LLM extraction call failed: %s", e)
-            return {"error": f"Extraction failed: {e}"}
+        # user_summary: first ~320 chars of the transcript, lightly cleaned.
+        existing_summary = graph.get("user_summary", "")
+        graph["user_summary"] = existing_summary or _summary_from_transcript(transcript)
+
+        # Store the full transcript as memory chunks so BrainRetriever can
+        # search it. Drop any prior auto-generated transcript memories
+        # (heuristic: name starts with "interview-").
+        memories = [m for m in graph.get("memories", []) if isinstance(m, dict)]
+        memories = [m for m in memories if not m.get("name", "").startswith("interview-")]
+        chunks = _chunk_text(transcript, target_chars=2000, max_chunks=12)
+        for idx, chunk in enumerate(chunks, start=1):
+            memories.append({
+                "name": f"interview-chunk-{idx}",
+                "summary": chunk,
+                "emotional_tone": 0.0,
+                "sensitivity": "personal",
+            })
+        graph["memories"] = memories
+
+        # Also keep the raw transcript as a top-level field so other
+        # tools can index it without needing a structured MemoryNode.
+        graph["raw_transcript"] = transcript
+        graph["_generated_at"] = _now_iso()
+
+        graph = _validate_graph(graph)
+        return {"graph": graph}
 
     def merge(self, existing_graph: dict, new_graph: dict) -> dict:
-        """Merge new extraction into existing graph."""
+        """Merge new extraction into existing graph (deterministic, no LLM)."""
         if not existing_graph:
             return new_graph
         if not new_graph:
             return existing_graph
 
-        # Simple merge: combine lists, prefer newer values for scalars
-        merged = dict(existing_graph)
+        merged = json.loads(json.dumps(existing_graph))
 
         for list_key in ["traits", "beliefs", "values", "boundaries", "life_events", "people"]:
             existing_items = merged.get(list_key, [])
             new_items = new_graph.get(list_key, [])
-            # Deduplicate by name
-            seen = {item.get("name", "") for item in existing_items}
+            seen = {item.get("name", "") for item in existing_items if isinstance(item, dict)}
             for item in new_items:
-                if item.get("name", "") not in seen:
+                if isinstance(item, dict) and item.get("name", "") not in seen:
                     existing_items.append(item)
                     seen.add(item.get("name", ""))
             merged[list_key] = existing_items
+
+        # memories: replace auto-generated chunks, keep hand-written ones
+        existing_mems = [m for m in merged.get("memories", []) if isinstance(m, dict) and not m.get("name", "").startswith("interview-")]
+        new_auto = [m for m in new_graph.get("memories", []) if isinstance(m, dict) and m.get("name", "").startswith("interview-")]
+        merged["memories"] = existing_mems + new_auto
 
         for dict_key in ["voice_dna", "work_dna", "emotional_profile"]:
             if dict_key in new_graph and new_graph[dict_key]:
@@ -348,6 +346,9 @@ class BrainBuilder:
         if new_graph.get("user_summary"):
             merged["user_summary"] = new_graph["user_summary"]
 
+        if new_graph.get("raw_transcript"):
+            merged["raw_transcript"] = new_graph["raw_transcript"]
+
         return merged
 
     def validate(self, graph: dict) -> dict:
@@ -357,12 +358,8 @@ class BrainBuilder:
 
         if not graph.get("user_summary"):
             issues.append("Missing user_summary")
-        if not graph.get("traits"):
-            issues.append("No traits extracted")
-        if not graph.get("values"):
-            issues.append("No values extracted")
-        if not graph.get("voice_dna", {}).get("humor_style"):
-            issues.append("Incomplete voice_dna")
+        if not graph.get("traits") and not graph.get("memories") and not graph.get("raw_transcript"):
+            issues.append("No traits, memories, or transcript extracted")
 
         total_nodes = (
             len(graph.get("traits", []))
@@ -371,6 +368,7 @@ class BrainBuilder:
             + len(graph.get("boundaries", []))
             + len(graph.get("life_events", []))
             + len(graph.get("people", []))
+            + len(graph.get("memories", []))
         )
 
         return {
@@ -384,5 +382,6 @@ class BrainBuilder:
                 "boundaries": len(graph.get("boundaries", [])),
                 "life_events": len(graph.get("life_events", [])),
                 "people": len(graph.get("people", [])),
+                "memories": len(graph.get("memories", [])),
             },
         }

@@ -1,8 +1,9 @@
 """brain-tools plugin — digital brain integration for beam-agent.
 
-Registers brain_search, brain_export, and brain_status tools
-that work with both local and remote (proxy) brains via the
-brain resolver abstraction.
+Registers brain_search, brain_export, and brain_status tools backed by
+the local personality graph (no network). The previous proxy mode has
+been removed — brains are downloaded once at install time and queried
+locally via the resolver.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from brain.brain_resolver import get_active_brain_interface, is_proxy_brain
+from brain.brain_resolver import get_active_brain_interface
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,10 @@ def _brain_status_handler(args: dict, **kw: Any) -> str:
 
 
 def _check_brain_available() -> bool:
-    """Check if any brain (local or proxy) is configured."""
+    """Check if any brain is configured locally."""
     from brain.paths import get_active_brain_name, get_brain_path
     brain_path = get_brain_path(get_active_brain_name())
-    # Local brain graph or proxy config
-    if (brain_path / "personality_graph.json").exists() or (brain_path / "brain_config.json").exists():
+    if (brain_path / "personality_graph.json").exists():
         return True
     # Fallback: old path (pre-migration)
     old_path = Path.home() / ".beam" / "brain" / get_active_brain_name() / "personality_graph.json"

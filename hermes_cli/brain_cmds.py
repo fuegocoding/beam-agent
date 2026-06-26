@@ -48,9 +48,8 @@ def cmd_brain_switch(name: str):
     # Check the brain has data
     brain_path = get_brain_path(name)
     graph_path = brain_path / "personality_graph.json"
-    config_path = brain_path / "brain_config.json"
 
-    if not graph_path.exists() and not config_path.exists():
+    if not graph_path.exists():
         print(f"Warning: Brain '{name}' has no data files.", file=sys.stderr)
 
     set_active_brain(name)
@@ -91,16 +90,9 @@ def cmd_brain_info(name: str | None = None):
 
     # Check for data
     graph_path = brain_path / "personality_graph.json"
-    config_path = brain_path / "brain_config.json"
     soul_path = brain_path / "soul.md"
 
-    if config_path.exists():
-        with open(config_path) as f:
-            cfg = json.load(f)
-        if cfg.get("type") == "proxy":
-            print(f"Type: API proxy (full graph stays server-side)")
-            print(f"API slug: {cfg.get('slug')}")
-    elif graph_path.exists():
+    if graph_path.exists():
         try:
             with open(graph_path, encoding="utf-8") as f:
                 graph = json.load(f)
@@ -111,7 +103,7 @@ def cmd_brain_info(name: str | None = None):
             kg = graph.get("knowledge_graph", {})
             node_count += len(kg.get("nodes", []))
             edge_count = len(graph.get("edges", [])) + len(kg.get("edges", []))
-            print(f"Type: Local (full brain)")
+            print(f"Type: Local (full brain, offline)")
             print(f"Nodes: {node_count}")
             print(f"Edges: {edge_count}")
         except Exception:
@@ -171,6 +163,76 @@ def cmd_brain_remove(name: str):
     print(f"Brain '{name}' removed.")
 
 
+def cmd_brain_update(name: str | None = None):
+    """Re-download an installed brain to pick up the latest version.
+
+    This is the runtime equivalent of `beam install <slug>` — the brain
+    subsystem is fully offline, so the only network call is the download
+    itself. After the new graph is on disk, all queries run locally.
+    """
+    from brain.paths import (
+        get_active_brain_name,
+        get_brain_info,
+        get_brain_path,
+    )
+    from hermes_cli.install_cmd import _download_brain
+
+    if not name:
+        name = get_active_brain_name()
+
+    info = get_brain_info(name)
+    if not info:
+        print(f"Brain '{name}' is not installed.", file=sys.stderr)
+        sys.exit(1)
+
+    source = info.get("source", "local")
+    slug = info.get("slug")
+
+    if source == "local":
+        print(f"Brain '{name}' is a local brain (no marketplace slug).", file=sys.stderr)
+        print(f"To update a local brain, edit {get_brain_path(name) / 'personality_graph.json'} directly.", file=sys.stderr)
+        sys.exit(1)
+
+    if source == "marketplace-official":
+        # Official brains are stored under the bare slug (e.g. "creative-writer").
+        display_slug = name
+    elif source == "marketplace-community":
+        if not slug:
+            print(f"Brain '{name}' has no marketplace slug recorded. Reinstall with:", file=sys.stderr)
+            print(f"  beam brain remove {name} && beam install @{slug or '<user/slug>'}", file=sys.stderr)
+            sys.exit(1)
+        display_slug = slug
+    else:
+        print(f"Brain '{name}' has unknown source '{source}'; cannot update.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Updating brain '{name}' from marketplace ({display_slug})...")
+    brain_path = get_brain_path(name)
+    graph_data = _download_brain(display_slug, brain_path)
+
+    # Re-write the graph on disk (the downloader already does this, but
+    # keep this defensive in case _download_brain's behavior changes).
+    graph_path = brain_path / "personality_graph.json"
+    graph_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
+
+    nodes = 0
+    if isinstance(graph_data, dict):
+        for key in ["traits", "beliefs", "values", "memories", "patterns",
+                    "procedural_patterns", "work_loops", "expertise"]:
+            nodes += len(graph_data.get(key, []))
+        kg = graph_data.get("knowledge_graph", {})
+        nodes += len(kg.get("nodes", []))
+    print(f"  Type: Local (downloaded, works offline)")
+    print(f"  Nodes: {nodes}")
+
+    # Refresh SOUL.md so it reflects the updated graph.
+    try:
+        _regenerate_soul(name)
+        print(f"  SOUL.md regenerated for '{name}'.")
+    except Exception as e:
+        print(f"  Warning: Could not regenerate SOUL.md: {e}")
+
+
 def _regenerate_soul(brain_name: str):
     """Regenerate SOUL.md for a brain (local or proxy)."""
     from brain.brain_resolver import resolve_brain
@@ -200,4 +262,4 @@ def _regenerate_soul(brain_name: str):
 
 def register_brain_subcommands(existing_subcommands: list[str] | None = None):
     """Return additional brain subcommand names for the command registry."""
-    return ["list", "switch", "info", "remove"]
+    return ["list", "switch", "info", "remove", "update"]
