@@ -16357,6 +16357,16 @@ Examples:
     remove_parser = brain_subparsers.add_parser("remove", help="Remove an installed brain")
     remove_parser.add_argument("name", help="Name of brain to remove")
 
+    update_parser = brain_subparsers.add_parser(
+        "update",
+        help="Re-download an installed marketplace brain to pick up the latest version",
+    )
+    update_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Brain name to update (defaults to active brain)",
+    )
+
     # =========================================================================
     # Parse and execute
     # =========================================================================
