@@ -1,6 +1,8 @@
-"""SOUL.md generator — Python-native, no Rust dependency.
+"""SOUL.md generator — Python-native, template-only.
 
-Generates a SOUL.md from the personality graph using LLM.
+Generates a SOUL.md from the personality graph using a pure template
+(no LLM). The brain subsystem is fully offline, so SOUL.md is built
+locally from whatever structured data is in the graph.
 """
 
 import json
@@ -12,68 +14,19 @@ logger = logging.getLogger(__name__)
 
 BEAM_HOME = Path(os.environ.get("BEAM_HOME", Path.home() / ".beam"))
 
-SOUL_PROMPT = """You are writing a SOUL.md file — a personal identity document that an AI agent loads to understand who it's talking to.
-
-Given a personality graph, write a warm, natural SOUL.md. The agent will read this at the start of every conversation.
-
-Rules:
-- Start with "# Soul"
-- Have a "## Who I Am" section (2-3 sentences, natural first-person voice)
-- Have sections for core traits, values, beliefs, communication style, work style
-- Write as if the person is describing themselves
-- Be specific — use their actual phrases and patterns
-- 200-400 words
-- No clinical language, no bullet-point-heavy sections — make it feel human
-
-Output ONLY the markdown content."""
-
-
-def _call_llm(system: str, user: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
-    """Make a one-shot LLM call via Hermes auxiliary client."""
-    from agent.auxiliary_client import call_llm
-    response = call_llm(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-        timeout=60.0,
-    )
-    return (response.choices[0].message.content or "").strip()
-
 
 def generate_soul_md(graph: dict, output_path: Path = None) -> str:
     """Generate SOUL.md from a PersonalityGraph.
 
-    Uses LLM to write a warm, natural identity document.
-    Falls back to a simple template if LLM is unavailable.
+    Uses a deterministic template — no LLM call. The previous LLM-based
+    generator was removed so the brain stays offline.
     """
     if output_path is None:
         output_path = BEAM_HOME / "SOUL.md"
 
     clone_name = graph.get("clone_name", "")
+    soul_content = _template_soul(graph)
 
-    # Try LLM generation first
-    try:
-        graph_summary = _summarize_graph(graph)
-        name_hint = f"The person's name is {clone_name}. " if clone_name else ""
-        soul_content = _call_llm(
-            "You are a personal identity writer. Write warm, natural prose.",
-            f"{SOUL_PROMPT}\n\n{name_hint}Personality data:\n{graph_summary}",
-            temperature=0.7,
-            max_tokens=2000,
-        )
-        # Clean up markdown fences if LLM wrapped them
-        if soul_content.startswith("```"):
-            lines = soul_content.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            soul_content = "\n".join(lines).strip()
-    except Exception as e:
-        logger.warning("LLM SOUL.md generation failed, using template: %s", e)
-        soul_content = _template_soul(graph)
-
-    # Prepend clone name to title
     if clone_name and "# Soul" in soul_content:
         soul_content = soul_content.replace("# Soul", f"# {clone_name}'s Soul", 1)
     elif clone_name and not soul_content.startswith(f"# {clone_name}"):
@@ -84,63 +37,8 @@ def generate_soul_md(graph: dict, output_path: Path = None) -> str:
     return soul_content
 
 
-def _summarize_graph(graph: dict) -> str:
-    """Create a text summary of the graph for the LLM."""
-    parts = []
-
-    if graph.get("user_summary"):
-        parts.append(f"Summary: {graph['user_summary']}")
-
-    if graph.get("traits"):
-        traits = ", ".join(
-            f"{t.get('name', t) if isinstance(t, dict) else t} ({t.get('strength', 0.5):.0%}): {t.get('summary', '')}"
-            if isinstance(t, dict) else str(t)
-            for t in graph["traits"]
-        )
-        parts.append(f"Traits: {traits}")
-
-    if graph.get("values"):
-        values = ", ".join(
-            f"{v.get('name', v) if isinstance(v, dict) else v} ({v.get('importance', 0.5):.0%}): {v.get('summary', '')}"
-            if isinstance(v, dict) else str(v)
-            for v in graph["values"]
-        )
-        parts.append(f"Values: {values}")
-
-    if graph.get("beliefs"):
-        beliefs = ", ".join(
-            f"{b.get('name', b) if isinstance(b, dict) else b} ({b.get('confidence', 0.5):.0%}): {b.get('summary', '')}"
-            if isinstance(b, dict) else str(b)
-            for b in graph["beliefs"]
-        )
-        parts.append(f"Beliefs: {beliefs}")
-
-    voice = graph.get("voice_dna", {})
-    if voice:
-        parts.append(f"Communication: humor={voice.get('humor_style', 'n/a')}, "
-                      f"length={voice.get('response_length_pattern', 'n/a')}, "
-                      f"formality={voice.get('formality_range', 'n/a')}")
-        if voice.get("characteristic_phrases"):
-            parts.append(f"Phrases they use: {', '.join(voice['characteristic_phrases'])}")
-
-    work = graph.get("work_dna", {})
-    if work:
-        parts.append(f"Work style: decomposition={work.get('decomposition_style', 'n/a')}, "
-                      f"debugging={work.get('debugging_approach', 'n/a')}, "
-                      f"risk={work.get('risk_posture', 'n/a')}")
-
-    emotional = graph.get("emotional_profile", {})
-    if emotional:
-        if emotional.get("energy_sources"):
-            parts.append(f"Energy sources: {', '.join(emotional['energy_sources'])}")
-        if emotional.get("energy_drains"):
-            parts.append(f"Energy drains: {', '.join(emotional['energy_drains'])}")
-
-    return "\n".join(parts)
-
-
 def _template_soul(graph: dict) -> str:
-    """Fallback: generate SOUL.md from template without LLM."""
+    """Generate SOUL.md from template — no LLM."""
     lines = ["# Soul\n"]
 
     if graph.get("user_summary"):
