@@ -1,14 +1,12 @@
 """beam install - Install brains from the Beam marketplace.
 
 Usage:
-    beam install <slug>                    # Install official brain (no @)
-    beam install @user/<slug>              # Install community brain
-    beam install @user/<slug> --token=xxx  # Install paid brain
+    beam install <slug>                # Install official brain
+    beam install @user/<slug>          # Install community brain
 
-Brains are NEVER downloaded as full JSON. Instead, a lightweight proxy
-config is stored in ~/.beam/brains/<name>/brain_config.json. All queries
-are forwarded to the Beam API so the full personality graph stays server-side
-and cannot be stolen.
+All marketplace brains are free. The full personality_graph.json is
+downloaded once and stored locally at ~/.beam/brains/<name>/personality_graph.json.
+All queries run offline against the local file.
 """
 import json
 import sys
@@ -52,94 +50,24 @@ def _parse_slug(raw_slug: str) -> tuple[str, str]:
         return raw_slug, raw_slug
 
 
-def _get_auth_token() -> str | None:
-    """Get the user's auth token from ~/.beam/auth.yaml or env."""
-    import os
-    from pathlib import Path
-
-    # Env override
-    env_token = os.environ.get("BEAM_AUTH_TOKEN")
-    if env_token:
-        return env_token
-
-    # Auth file
-    auth_path = Path.home() / ".beam" / "auth.yaml"
-    if auth_path.exists():
-        try:
-            import yaml
-            data = yaml.safe_load(auth_path.read_text(encoding="utf-8"))
-            return data.get("token")
-        except Exception:
-            pass
-    return None
-
-
-def _download_brain(slug: str, output_path: Path, token: str | None = None) -> dict:
+def _download_brain(slug: str, output_path: Path) -> dict:
     """Install a brain from the marketplace.
 
-    For ALL brains (free, community, paid) we store a proxy config
-    (brain_config.json) instead of downloading the full personality graph.
-    The graph stays server-side and is queried via API.
+    Downloads the full personality_graph.json via the public download
+    endpoint. No auth required — all marketplace brains are free.
     """
     api_url = _get_api_url()
     output_path.mkdir(parents=True, exist_ok=True)
 
-    if token:
-        # Paid brain — user provided a purchase token directly
-        # Validate it by pinging the context endpoint
-        url = f"{api_url}/api/v1/brain-proxy/{slug}/context"
-        headers = {"Authorization": f"Bearer {token}"}
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.get(url, headers=headers)
-                resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                print("Error: Invalid or expired install token.", file=sys.stderr)
-                sys.exit(1)
-            elif e.response.status_code == 402:
-                print("Error: Purchase is no longer active.", file=sys.stderr)
-                sys.exit(1)
-            else:
-                print(f"Error: API returned {e.response.status_code}", file=sys.stderr)
-                sys.exit(1)
-        except httpx.ConnectError:
-            print("Error: Cannot connect to Beam API. Paid brains require internet.", file=sys.stderr)
-            sys.exit(1)
-
-        proxy_config = {
-            "type": "proxy",
-            "slug": slug,
-            "token": token,
-            "api_url": api_url,
-        }
-        with open(output_path / "brain_config.json", "w") as f:
-            json.dump(proxy_config, f, indent=2)
-        return proxy_config
-
-    # Free / community brain — request an install token from the API
-    auth_token = _get_auth_token()
-    if not auth_token:
-        print("Error: BEAM_AUTH_TOKEN environment variable required for installing marketplace brains.", file=sys.stderr)
-        print("  1. Go to https://beammind.dev/dashboard/settings", file=sys.stderr)
-        print("  2. Copy your CLI token from the 'CLI Access' section", file=sys.stderr)
-        print("  3. Run: export BEAM_AUTH_TOKEN=<your-token>", file=sys.stderr)
-        print("  4. Then: beam install creative-writer", file=sys.stderr)
-        sys.exit(1)
-
-    url = f"{api_url}/api/v1/marketplace/{slug}/install-token"
-    headers = {"Authorization": f"Bearer {auth_token}"}
+    url = f"{api_url}/api/v1/marketplace/{slug}/download"
     try:
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url, headers=headers)
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.get(url)
             resp.raise_for_status()
-            token_data = resp.json()
-            install_token = token_data["token"]
+            graph_data = resp.json()
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             print(f"Error: Brain '{slug}' not found on marketplace.", file=sys.stderr)
-        elif e.response.status_code == 401:
-            print("Error: Authentication failed. Please log in again.", file=sys.stderr)
         else:
             print(f"Error: API returned {e.response.status_code}", file=sys.stderr)
         sys.exit(1)
@@ -147,15 +75,9 @@ def _download_brain(slug: str, output_path: Path, token: str | None = None) -> d
         print("Error: Cannot connect to Beam API.", file=sys.stderr)
         sys.exit(1)
 
-    proxy_config = {
-        "type": "proxy",
-        "slug": slug,
-        "token": install_token,
-        "api_url": api_url,
-    }
-    with open(output_path / "brain_config.json", "w") as f:
-        json.dump(proxy_config, f, indent=2)
-    return proxy_config
+    graph_path = output_path / "personality_graph.json"
+    graph_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
+    return graph_data
 
 
 def cmd_install(args):
@@ -170,15 +92,13 @@ def cmd_install(args):
 
     # Parse arguments
     raw_slug = getattr(args, "slug", None)
-    token = getattr(args, "token", None)
     no_activate = getattr(args, "no_activate", False)
 
     if not raw_slug:
-        print("Usage: beam install <slug> [--token=<token>] [--no-activate]", file=sys.stderr)
+        print("Usage: beam install <slug> [--no-activate]", file=sys.stderr)
         print("\nExamples:")
         print("  beam install creative-writer          # Official brain")
         print("  beam install @alice/coach              # Community brain")
-        print("  beam install @bob/writer --token=xxx   # Paid brain")
         sys.exit(1)
 
     # Parse slug
@@ -199,12 +119,10 @@ def cmd_install(args):
     print(f"Installing brain '{display_slug}'...")
     brain_path = get_brain_path(install_name)
 
-    brain_data = _download_brain(display_slug, brain_path, token=token)
+    _download_brain(display_slug, brain_path)
 
     # Determine source type
-    if token:
-        source = "marketplace-paid"
-    elif raw_slug.startswith("@"):
+    if raw_slug.startswith("@"):
         source = "marketplace-community"
     else:
         source = "marketplace-official"
@@ -215,7 +133,6 @@ def cmd_install(args):
         install_name,
         source=source,
         slug=slug_for_config,
-        token=token,
     )
 
     # Set as active brain unless --no-activate
@@ -226,8 +143,8 @@ def cmd_install(args):
         print(f"Brain '{install_name}' installed.")
 
     # Show summary
-    print(f"  Type: API proxy (full graph stays server-side)")
-    print(f"  Note: This brain requires internet to use.")
+    print(f"  Type: Local (full brain, works offline)")
+    print(f"  Path: {brain_path / 'personality_graph.json'}")
 
 
 def register_install_command(subparsers):
@@ -240,10 +157,6 @@ def register_install_command(subparsers):
     parser.add_argument(
         "slug",
         help="Brain slug (e.g., 'creative-writer' or '@alice/coach')",
-    )
-    parser.add_argument(
-        "--token",
-        help="Install token for paid brains",
     )
     parser.add_argument(
         "--no-activate",
