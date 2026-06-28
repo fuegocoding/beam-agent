@@ -146,6 +146,19 @@ def cmd_install(args):
     print(f"  Type: Local (full brain, works offline)")
     print(f"  Path: {brain_path / 'personality_graph.json'}")
 
+    # Eagerly materialize ~/.hermes/SOUL.md from the newly-installed
+    # brain so the next `beam` launch already has the new identity in
+    # place. Without this the user has to wait for the
+    # on_session_start hook to fire (which only handles a few edge
+    # cases — see plugins/brain-tools/_on_session_start).
+    if not no_activate:
+        try:
+            from hermes_cli.brain_cmds import _regenerate_soul
+            _regenerate_soul(install_name)
+            print(f"  SOUL.md regenerated for '{install_name}'.")
+        except Exception as exc:
+            print(f"  Warning: Could not regenerate SOUL.md: {exc}", file=sys.stderr)
+
 
 def register_install_command(subparsers):
     """Register the 'install' subcommand with argparse."""

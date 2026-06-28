@@ -165,6 +165,15 @@ def register(ctx) -> None:
     # Register gateway hook: auto-update SOUL.md when brain tools are used
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 
+    # Register session-start hook: materialize ~/.hermes/SOUL.md from
+    # the active brain the first time a session begins, and invalidate
+    # the agent's cached system prompt so the regenerated identity is
+    # picked up on the very next turn. Without this, a marketplace
+    # brain installed in a previous session leaves SOUL.md stale
+    # (or empty) and the agent has no personality until the user
+    # explicitly runs `brain_export` or restarts.
+    ctx.register_hook("on_session_start", _on_session_start)
+
 
 # ---------------------------------------------------------------------------
 # Gateway hook: auto-update SOUL.md on brain change
@@ -203,3 +212,96 @@ def _on_post_tool_call(
             logger.info("Auto-updated SOUL.md after %s", tool_name)
     except Exception as exc:
         logger.debug("SOUL.md auto-update failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Session-start hook: materialize SOUL.md from the active brain
+# ---------------------------------------------------------------------------
+
+# Cached signal that the very first session-start of this process
+# already materialized SOUL.md. Without this, every gateway turn
+# would re-run the export (the gateway spins up a fresh AIAgent per
+# message, so on_session_start fires for every message). The export
+# is cheap but the noise in gateway.log isn't.
+_session_start_seen: set[str] = set()
+
+
+def _on_session_start(
+    session_id: str = "",
+    model: str = "",
+    platform: str = "",
+    **_: Any,
+) -> None:
+    """Materialize ~/.hermes/SOUL.md from the active brain on first turn.
+
+    Two triggers to handle:
+
+    1. **First-ever session for this active brain** — SOUL.md doesn't
+       exist or is the previous brain's. Regenerate from the active
+       brain's graph.
+    2. **Marketplace-schema brain installed** — the previous
+       legacy-only soul_generator would have produced a 582-byte
+       empty SOUL.md. Detect this via
+       :func:`brain.schema_adapter.has_marketplace_payload` and
+       rewrite using the schema-aware retriever.
+
+    Gated by ``_session_start_seen`` so we don't re-export on every
+    gateway turn (each gateway turn creates a new AIAgent, which
+    re-fires on_session_start).
+    """
+    from brain.paths import (
+        get_active_brain_graph_path,
+        get_active_brain_name,
+    )
+    from brain.schema_adapter import has_marketplace_payload
+    from hermes_constants import get_hermes_home
+
+    cache_key = f"{platform}:{get_active_brain_name()}:{session_id}"
+    if cache_key in _session_start_seen:
+        return
+
+    graph_path = get_active_brain_graph_path()
+    if not graph_path.exists():
+        # No brain installed — nothing to do. The agent will fall back
+        # to DEFAULT_SOUL_MD via the prompt builder.
+        _session_start_seen.add(cache_key)
+        return
+
+    # Decide whether the existing SOUL.md needs regenerating.
+    hermes_home = get_hermes_home()
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    soul_path = hermes_home / "SOUL.md"
+
+    needs_regen = False
+    if not soul_path.exists():
+        needs_regen = True
+    elif soul_path.stat().st_size < 800:
+        # Legacy template produces ~582 bytes for marketplace brains
+        # (only voice_dna populated). Anything shorter than the
+        # rough minimum for a populated brain is treated as a stub.
+        try:
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+            if has_marketplace_payload(graph):
+                needs_regen = True
+        except Exception:
+            pass
+
+    if not needs_regen:
+        _session_start_seen.add(cache_key)
+        return
+
+    try:
+        brain = get_active_brain_interface()
+        soul_result = brain.export_soul()
+        soul_md = soul_result.get("soul_md", "")
+        if soul_md:
+            soul_path.write_text(soul_md, encoding="utf-8")
+            logger.info(
+                "Materialized SOUL.md from active brain '%s' (%d chars)",
+                get_active_brain_name(),
+                len(soul_md),
+            )
+    except Exception as exc:
+        logger.debug("SOUL.md materialization failed: %s", exc)
+    finally:
+        _session_start_seen.add(cache_key)

@@ -150,6 +150,217 @@ class TestBrainRetriever:
         assert "raw_transcript" in stats["coverage"]
 
 
+class TestMarketplaceSchemaBrain:
+    """Regression tests for marketplace-schema brains.
+
+    api.openbeam.me ships brains in a richer schema
+    (``personality_profile`` / ``knowledge_graph`` /
+    ``knowledge_domains`` / ``episodic_memories``) than the legacy
+    flat schema the in-tree brain_builder produces. Before
+    :mod:`brain.schema_adapter` was introduced, the retriever and
+    SOUL.md generator only read the legacy flat keys, so a downloaded
+    marketplace brain came back as a 582-byte empty persona with zero
+    searchable nodes — the agent had no personality to draw on.
+
+    These tests assert the behavior contract, not specific counts:
+    any marketplace brain (regardless of which historical figure /
+    community author built it) must produce a non-empty search
+    result for a relevant query, populate ``coverage`` with the
+    marketplace keys, and render a SOUL.md that mentions the
+    personality content.
+    """
+
+    @pytest.fixture
+    def marketplace_graph(self):
+        """Minimal marketplace-schema graph (the only fields the
+        schema adapter actually needs). Avoids the full 210 KB
+        Seneca fixture so the test stays fast and the assertions
+        don't depend on which brains happen to be in the catalog
+        today (change-detector trap)."""
+        return {
+            "personality_profile": {
+                "values": [
+                    "Temperance (0.95): Moderation in all things is the path to clarity.",
+                    "Courage (0.90): Face what must be faced, even when afraid.",
+                ],
+                "core_beliefs": [
+                    "Discipline is freedom. (confidence: 0.97) [Letters]",
+                    "Time is the only true wealth. (confidence: 0.92)",
+                ],
+                "cognitive_patterns": [
+                    "First principles: strip a problem to its base before solving.",
+                ],
+                "communication_style": "Direct, plainspoken, occasionally pointed.",
+                "formality": "Low — talks like a craftsman, not a lecturer.",
+                "humor_frequency": "Rare but dry.",
+            },
+            "knowledge_graph": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "PersonalityTrait",
+                        "label": "Resilient",
+                        "summary": "Endures hardship without losing focus on the goal.",
+                        "attributes": {"strength": 0.8},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "PersonalityTrait",
+                        "label": "Pragmatic",
+                        "summary": "Picks the working solution over the elegant one.",
+                        "attributes": {"strength": 0.7},
+                    },
+                    {
+                        "id": "n3",
+                        "type": "PersonalityTrait",
+                        "label": "Stoic",
+                        "summary": "Separates what can be controlled from what cannot.",
+                        "attributes": {"strength": 0.6},
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2", "relation": "COMPLEMENTS"},
+                ],
+            },
+            "knowledge_domains": [
+                {
+                    "topic": "Craftsmanship",
+                    "community_summary": "Deep focus on doing the work well, with patience and care.",
+                    "key_entities": ["practice", "patience", "tooling"],
+                    "confidence": 0.9,
+                    "source_count": 7,
+                },
+            ],
+            "episodic_memories": [
+                {
+                    "name": "The forge",
+                    "content": "Spent the night at the forge, hammering a blade that refused to straighten.",
+                    "emotional_tone": 0.4,
+                },
+            ],
+            "voice_dna": {
+                "humor_style": "dry, observational",
+                "response_length_pattern": "concise by default",
+                "characteristic_phrases": ["the work speaks"],
+            },
+        }
+
+    def test_search_hits_personality_profile_value(self, marketplace_graph):
+        """A query matching a ``personality_profile.values`` entry
+        must return a hit — before the schema adapter this returned
+        0 even for an obvious match like 'temperance'."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("temperance", marketplace_graph, "owner", "standard")
+        assert result["total_matches"] >= 1
+        types = {n.get("type") for n in result["nodes"]}
+        assert "value" in types
+
+    def test_search_hits_knowledge_graph_node(self, marketplace_graph):
+        """A query matching a ``knowledge_graph.nodes[*].summary`` must
+        return a hit. Before the schema adapter the retriever only
+        iterated the legacy flat keys and missed this entirely."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("endures hardship", marketplace_graph, "owner", "standard")
+        assert result["total_matches"] >= 1
+        # The fixture node has type=PersonalityTrait which the adapter
+        # canonicalizes to 'trait' so it stays consistent with the
+        # legacy schema's node type vocabulary.
+        assert any(
+            "Resilient" in n.get("name", "") for n in result["nodes"]
+        )
+
+    def test_search_extracts_embedded_score(self, marketplace_graph):
+        """Marketplace values like ``'Temperance (0.95): ...'`` embed
+        the numeric importance in the name string. The adapter must
+        parse it out so the importance field is 0.95, not the 0.5
+        default."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("temperance", marketplace_graph, "owner", "standard")
+        matches = [n for n in result["nodes"] if "Temperance" in n.get("name", "")]
+        assert matches, "expected a Temperance value match"
+        # Score extraction: importance 0.95 should propagate to the
+        # node, not stay at the 0.5 default.
+        assert any(
+            abs(m.get("importance", 0) - 0.95) < 0.01 for m in matches
+        ), f"expected importance 0.95, got nodes: {matches}"
+
+    def test_stats_includes_marketplace_keys(self, marketplace_graph):
+        """``get_stats`` must surface the marketplace-schema node
+        counts via the ``knowledge_graph_nodes``, ``knowledge_domains``,
+        and ``episodic_memories`` coverage keys — without these, the
+        CLI's `brain status` / `brain info` outputs report 0 for any
+        downloaded brain."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        stats = retriever.get_stats(marketplace_graph)
+        coverage = stats["coverage"]
+        # Invariant: marketplace brains carry knowledge_graph + domains
+        # + episodic memories; the coverage dict must reflect that
+        # (previously these fields were always 0).
+        assert coverage["knowledge_graph_nodes"] >= 3
+        assert coverage["knowledge_domains"] >= 1
+        assert coverage["episodic_memories"] >= 1
+        # Legacy keys can legitimately be 0 for marketplace brains —
+        # don't assert non-zero (would be a change-detector).
+        assert "traits" in coverage
+        assert "knowledge_graph_nodes" in coverage
+
+    def test_stats_includes_total_edges(self, marketplace_graph):
+        """``get_stats`` must report ``total_edges`` from both
+        ``knowledge_graph.edges`` and the legacy top-level
+        ``edges`` field. Previously always 0."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        stats = retriever.get_stats(marketplace_graph)
+        assert stats["total_edges"] >= 1
+
+    def test_soul_md_contains_personality_content(self, marketplace_graph):
+        """The template-only SOUL.md generator must produce content
+        drawn from the marketplace schema. Before the fix it emitted
+        a 582-byte stub with only the voice_dna block populated,
+        even when the graph carried 50+ nodes."""
+        from brain.soul_generator import _template_soul
+        soul = _template_soul(marketplace_graph)
+        # Invariant: a marketplace brain with personality_profile +
+        # knowledge_graph + knowledge_domains + voice_dna must
+        # produce a SOUL.md larger than the 582-byte legacy-only
+        # ceiling (which is what `_template_soul` produced when it
+        # only knew about the legacy flat schema — see PR
+        # "brains arent properly injected into the beam agent").
+        LEGACY_ONLY_STUB_CEILING = 600
+        assert len(soul) > LEGACY_ONLY_STUB_CEILING, (
+            f"SOUL.md too small ({len(soul)} chars); legacy-only stub "
+            f"(<= {LEGACY_ONLY_STUB_CEILING} chars) suggests the "
+            f"schema adapter isn't wired up."
+        )
+        # The marketplace value "Temperance" must appear in the
+        # rendered SOUL.md so the model can use it.
+        assert "Temperance" in soul
+        # The knowledge domain "Craftsmanship" must surface — it's
+        # exactly the kind of high-signal data the marketplace adds.
+        assert "Craftsmanship" in soul
+        # The forge episodic memory should also show up in
+        # the "Memorable Context" section.
+        assert "Memorable Context" in soul
+        assert "forge" in soul.lower()
+
+    def test_schema_adapter_legacy_still_works(self, sample_graph):
+        """Adding the marketplace schema path must not break the
+        legacy flat schema. The retriever's node count, type set, and
+        relevance ranking for a query like 'analytical' must remain
+        stable."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("analytical", sample_graph, "owner", "standard")
+        # Legacy invariant: the analytical trait is the top hit.
+        assert result["nodes"][0]["name"] == "analytical"
+        assert result["nodes"][0]["type"] == "trait"
+        assert result["nodes"][0]["relevance"] > 0
+
+
 class TestBrainBuilder:
     """Test offline transcript → graph conversion."""
 
@@ -529,3 +740,67 @@ class TestEndToEndFlow:
             # transcript_excerpt hit for "thoughtful".
             types = {n.get("type") for n in search_result["nodes"]}
             assert types & {"memory", "transcript_excerpt"}
+
+
+class TestBrainInstallMaterializesSoul:
+    """`beam install <slug>` must eagerly regenerate ~/.hermes/SOUL.md
+    from the downloaded marketplace brain so the next session has a
+    populated identity — without this, the user had to wait for the
+    on_session_start hook (which only fires on edge cases) or
+    manually call `brain_export`."""
+
+    def test_cmd_install_writes_soul_md(
+        self, beam_home, hermes_home, marketplace_graph_factory
+    ):
+        import argparse
+        from unittest.mock import MagicMock, patch
+        from hermes_cli import install_cmd
+
+        # Stub the marketplace download so the test doesn't hit the
+        # network. We return a marketplace-schema graph that exercises
+        # the schema adapter end-to-end.
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = marketplace_graph_factory()
+        fake_resp.raise_for_status.return_value = None
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value.get.return_value = fake_resp
+
+        args = argparse.Namespace(slug="creative-writer", no_activate=False)
+
+        with patch("hermes_cli.install_cmd.httpx.Client", return_value=fake_client), \
+             patch("brain.paths.BEAM_HOME", beam_home), \
+             patch("hermes_constants.get_hermes_home", return_value=hermes_home):
+            install_cmd.cmd_install(args)
+
+        soul_path = hermes_home / "SOUL.md"
+        assert soul_path.exists(), "cmd_install should have materialized SOUL.md"
+        soul = soul_path.read_text(encoding="utf-8")
+        # Invariant: the materialized SOUL.md must contain the
+        # marketplace brain's personality content, not just the
+        # legacy-only voice_dna stub.
+        assert "Temperance" in soul or "Courage" in soul, (
+            "marketplace values missing from materialized SOUL.md — "
+            "schema adapter not wired into soul_generator"
+        )
+
+
+@pytest.fixture
+def marketplace_graph_factory():
+    """Factory for a minimal marketplace-schema graph used in install tests."""
+    def _make():
+        return {
+            "personality_profile": {
+                "values": [
+                    "Temperance (0.95): Moderation in all things.",
+                    "Courage (0.90): Face what must be faced.",
+                ],
+                "core_beliefs": [
+                    "Discipline is freedom. (confidence: 0.97)",
+                ],
+            },
+            "voice_dna": {
+                "humor_style": "dry",
+                "response_length_pattern": "concise",
+            },
+        }
+    return _make
