@@ -292,7 +292,11 @@ class TestMarketplaceSchemaBrain:
         counts via the ``knowledge_graph_nodes``, ``knowledge_domains``,
         and ``episodic_memories`` coverage keys — without these, the
         CLI's `brain status` / `brain info` outputs report 0 for any
-        downloaded brain."""
+        downloaded brain.
+
+        Additionally, legacy keys (traits, beliefs, values, etc.) must
+        now be populated from the adapted node list so marketplace brains
+        do not appear empty."""
         from brain.brain_retriever import BrainRetriever
         retriever = BrainRetriever()
         stats = retriever.get_stats(marketplace_graph)
@@ -303,9 +307,10 @@ class TestMarketplaceSchemaBrain:
         assert coverage["knowledge_graph_nodes"] >= 3
         assert coverage["knowledge_domains"] >= 1
         assert coverage["episodic_memories"] >= 1
-        # Legacy keys can legitimately be 0 for marketplace brains —
-        # don't assert non-zero (would be a change-detector).
-        assert "traits" in coverage
+        # Legacy keys must now count adapted marketplace nodes too.
+        assert coverage["traits"] >= 3
+        assert coverage["beliefs"] >= 2
+        assert coverage["values"] >= 2
         assert "knowledge_graph_nodes" in coverage
 
     def test_stats_includes_total_edges(self, marketplace_graph):

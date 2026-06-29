@@ -254,14 +254,16 @@ class BrainRetriever:
             "total_edges": len(edges),
             "raw_transcript_chars": len(graph.get("raw_transcript", "")),
             "coverage": {
-                # Legacy keys (unchanged — preserves test fixtures)
-                "traits": len(graph.get("traits", [])),
-                "beliefs": len(graph.get("beliefs", [])),
-                "values": len(graph.get("values", [])),
-                "boundaries": len(graph.get("boundaries", [])),
-                "life_events": len(graph.get("life_events", [])),
-                "people": len(graph.get("people", [])),
-                "memories": len(graph.get("memories", [])),
+                # Legacy keys now derive from node_counts so marketplace-
+                # schema brains (knowledge_graph.nodes, personality_profile,
+                # episodic_memories) report real counts instead of 0.
+                "traits": node_counts.get("trait", 0),
+                "beliefs": node_counts.get("belief", 0),
+                "values": node_counts.get("value", 0),
+                "boundaries": node_counts.get("boundary", 0),
+                "life_events": node_counts.get("life_event", 0),
+                "people": node_counts.get("person", 0),
+                "memories": node_counts.get("memory", 0),
                 "raw_transcript": bool(graph.get("raw_transcript")),
                 "voice_dna": bool(graph.get("voice_dna", {}).get("humor_style")),
                 "work_dna": bool(graph.get("work_dna", {}).get("decomposition_style")),

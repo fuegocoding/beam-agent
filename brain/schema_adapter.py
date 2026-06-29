@@ -376,14 +376,22 @@ def _iter_marketplace_knowledge_graph(graph: Dict[str, Any]) -> Iterator[Dict[st
 
     type_map = {
         "Person": "person",
+        "Entity": "person",
         "PersonalityTrait": "trait",
         "Trait": "trait",
         "Belief": "belief",
         "Value": "value",
         "Memory": "memory",
+        "EpisodicMemory": "memory",
         "Event": "life_event",
+        "LifeEvent": "life_event",
         "Pattern": "pattern",
+        "CognitivePattern": "pattern",
+        "SocialPattern": "social",
+        "StyleProfile": "style",
+        "Boundary": "boundary",
         "Expertise": "expertise",
+        "KnowledgeDomain": "expertise",
         "Place": "place",
         "Concept": "concept",
     }
