@@ -48,7 +48,13 @@ pip install -e ".[all]"
 beam
 ```
 
-The `beam` command checks for API keys and config on first run, walks you through setup if needed, then starts the interactive CLI.
+The `beam` command detects what's missing and walks you through the first-time setup. The flow is:
+
+1. **API key** — paste your OpenRouter / OpenAI / Anthropic / Gemini / DeepSeek key
+2. **Neo4j** (optional but recommended) — walk through `setup-neo4j` with Neo4j Aura, Docker, or Desktop
+3. **Brain** — choose between installing a marketplace brain (interactive picker, ~5 sec download) or running the build-your-own interview (~20 min)
+
+After setup, `beam` launches the interactive CLI.
 
 ---
 
@@ -57,6 +63,9 @@ The `beam` command checks for API keys and config on first run, walks you throug
 Beam Agent ships with **9 Pantheon personalities** ready to install. Each brain is a 200–400 KB personality graph backed by extensive domain research — download takes a few seconds and the brain is fully offline forever after.
 
 ```bash
+# Interactive picker (shows full catalog, recommends first un-installed brain)
+beam install
+
 # Install any personality by slug
 beam install bill-gates
 beam install elon-musk
@@ -67,27 +76,68 @@ beam install virginia-woolf
 beam install leonardo-da-vinci
 beam install benjamin-franklin
 beam install albert-einstein
+
+# Community brains (other users' published personalities)
+beam install @alice/coach
+
+# List the full catalog without installing
+beam install --list
+
+# The same commands work as subcommands of `brain`
+beam brain install                    # interactive picker
+beam brain install bill-gates
+beam brain install --list
 ```
 
 The new brain is downloaded to `~/.beam/brains/<slug>/personality_graph.json`, registered in `~/.beam/config.yaml`, and activated. A matching SOUL.md is materialized to `~/.hermes/SOUL.md`.
 
+**If Neo4j is configured**, the install also auto-ingests the brain's 206 nodes / 513 edges into the Neo4j graph so `beam brain platform-search` and the agent's `GraphBackedBrainRetriever` work against the same brain with no separate ingest step.
+
 ### Switch Between Brains
 
 ```bash
-beam brain list                # Show all installed brains (● = active)
+beam brain list                # Show installed + available marketplace brains
 beam brain switch elon-musk    # Switch active brain
 beam brain info bill-gates     # Show node count, edges, coverage
 beam brain update bill-gates   # Re-download latest from marketplace
 beam brain remove elon-musk    # Uninstall
 ```
 
+`beam brain list` (and `/brain list`) shows **both** sections in one view — the brains you have installed (with their active/ready status) AND the marketplace brains you don't (so you can see what's available without running a separate command):
+
+```
+Installed brains:
+
+  ○ ready    bill-gates           [marketplace-official]
+  ● ACTIVE  terence-tao          [marketplace-official]
+
+Available from marketplace (7):
+
+  · elon-musk            Elon Musk          — engineer, entrepreneur (Tesla/SpaceX)
+  · marcus-aurelius      Marcus Aurelius    — Roman emperor, Stoic philosopher
+  · seneca               Seneca             — Roman Stoic philosopher, tutor to Nero
+  · albert-einstein      Albert Einstein    — theoretical physicist
+  · benjamin-franklin    Benjamin Franklin  — founding father, scientist
+  · virginia-woolf       Virginia Woolf     — modernist novelist, feminist
+  · leonardo-da-vinci    Leonardo da Vinci  — Renaissance polymath
+
+Install with: beam brain install <slug>
+  Or run:     beam brain install   (interactive picker)
+
+Active: terence-tao
+```
+
 Or inside the interactive CLI:
 
 ```
 /brain                         # Interactive picker (↑/↓ + enter)
-/brain list                    # List all installed
+/brain list                    # Installed + available marketplace
 /brain switch <name>           # Switch active
+/brain install [slug]          # Install a marketplace brain
+/brain install                 # Interactive picker
+/brain install --list           # Show catalog
 /brain info [name]             # Show coverage + stats
+/brain update [name]           # Re-download
 /brain remove <name>           # Uninstall
 ```
 
@@ -108,6 +158,8 @@ Switching regenerates `~/.hermes/SOUL.md` and invalidates the agent's cached sys
 | `leonardo-da-vinci` | Leonardo da Vinci | creative | Renaissance polymath — painter, engineer, anatomist, and student of nature |
 
 All marketplace brains are free. Browse the catalog at [openbeam.me/marketplace](https://openbeam.me/marketplace). Override the API endpoint with `BEAM_API_URL=<your-mirror>` for self-hosted catalogs.
+
+> **First-time users** get the marketplace vs build-your-own choice during the initial `beam` setup. The launcher shows the full marketplace catalog and recommends the first un-installed brain as a fast alternative to the 20-minute build-your-own interview. You can pick either path from the same prompt.
 
 ### Build Your Own Brain
 
@@ -237,17 +289,18 @@ The brain runtime is fully offline after install for marketplace brains. Search,
 | Command | Description |
 |---------|-------------|
 | `beam` | Start interactive chat (default — first-time setup if needed) |
-| `beam install <slug>` | Install a Pantheon personality from the marketplace |
-| `beam brain list` | Show installed brains (active marked) |
+| `beam install [slug]` | Install a marketplace brain (no args = interactive picker, `--list` shows catalog) |
+| `beam brain install [slug]` | Same as `beam install`, as a subcommand of `brain` |
+| `beam brain list` | Show installed + available marketplace brains (with active marker) |
 | `beam brain switch <name>` | Switch the active brain |
 | `beam brain info [name]` | Show node count, edges, coverage |
 | `beam brain update [name]` | Re-download from marketplace |
 | `beam brain remove <name>` | Uninstall a brain |
 | `beam interview` | Start the offline scripted personality interview |
 | `beam interview --adaptive` | Start the LLM-powered adaptive interview (`brain_platform`) |
-| `beam brain setup-neo4j` | Configure Neo4j connection for `brain_platform` |
+| `beam brain setup-neo4j` | Configure Neo4j connection for `brain_platform` (interactive wizard) |
 | `beam brain platform-ingest <file>` | Ingest a file (PDF/DOCX/md/code/email/journal/...) into the brain |
-| `beam brain platform-search <query>` | Search the Neo4j-backed personality graph |
+| `beam brain platform-search <query>` | Search the Neo4j-backed personality graph (auto-uses active brain) |
 | `beam brain platform-deepen` | Analyze brain gaps and generate probe questions |
 | `beam brain platform-generate <out.json>` | Assemble the canonical brain file from Neo4j |
 | `beam brain platform-export <out> --format <fmt>` | Export brain file as `claude`, `jsonld`, or `obsidian` |
@@ -255,6 +308,8 @@ The brain runtime is fully offline after install for marketplace brains. Search,
 | `beam gateway` | Run the messaging gateway daemon |
 | `beam setup` | Setup wizard (provider + API key) |
 | `/brain` (in CLI) | Interactive brain picker (↑/↓ + enter) |
+| `/brain list` (in CLI) | Installed + available marketplace, same as `beam brain list` |
+| `/brain install [slug]` (in CLI) | Install a marketplace brain, same as `beam brain install` |
 | `/interview` (in CLI) | Start interview from inside chat |
 | `/model` (in CLI) | Switch LLM provider/model |
 | `/help` (in CLI) | Show all slash commands |
@@ -289,7 +344,7 @@ The `brain_platform/` build path uses Neo4j + Graphiti for bi-temporal graph per
 - Search via `beam brain platform-search` (the agent uses this at runtime)
 - Generate / export brain files via `beam brain platform-{generate,export}`
 
-**Marketplace brains don't need it** — they're fully offline JSON files.
+**Marketplace brains don't need it** — they're fully offline JSON files. But to make the marketplace brain *queryable* via `beam brain platform-search` (rather than the slower offline keyword search), Neo4j is required.
 
 Three deployment options (any of them work):
 
@@ -317,6 +372,10 @@ Download from https://neo4j.com/download/, create a local DBMS, then point `NEO4
 
 The `beam brain setup-neo4j` wizard writes `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` to `~/.hermes/.env`. The agent runtime reads these automatically. If Neo4j goes down mid-session, the `GraphBackedBrainRetriever` falls back to the offline keyword retriever transparently.
 
+### OpenRouter users
+
+If you have only `OPENROUTER_API_KEY` (no `OPENAI_API_KEY`), the LocalGraphStore auto-derives `OPENAI_API_KEY` + `OPENAI_BASE_URL` from your OpenRouter key at import time. Graphiti's embedder uses the OpenAI client directly, so without this derivation you'd get `OpenAIError: api_key must be set`. The derivation is idempotent — if you already have `OPENAI_API_KEY`, it's left alone.
+
 ---
 
 ## Development
@@ -330,8 +389,20 @@ scripts/run_tests.sh tests/beam/ -v
 # brain_platform (LLM-powered build path, ported from beam_mind)
 scripts/run_tests.sh tests/brain_platform/ -v
 
-# All ported code (212 tests, zero regressions)
+# All ported code (292 tests, zero regressions)
 scripts/run_tests.sh tests/beam/ tests/brain_platform/ -v
+
+# Live integration tests (requires Neo4j + LLM API key)
+# See tests/brain_platform/test_integration.py — marked @pytest.mark.integration
+OPENROUTER_API_KEY=sk-or-... \
+OPENAI_API_KEY=sk-or-... \
+OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+NEO4J_URI=neo4j+s://... \
+NEO4J_USER=... NEO4J_PASSWORD=... \
+python -m pytest tests/brain_platform/test_integration.py -v -s
+
+# Fast offline smoke tests (every service exercised, no real LLM/Neo4j)
+scripts/run_tests.sh tests/brain_platform/test_smoke.py -v
 ```
 
 The wrapper enforces hermetic environment parity with CI (TZ=UTC, LANG=C.UTF-8, subprocess-per-test isolation, credential-env blanking). See [AGENTS.md](AGENTS.md) for details.
@@ -358,6 +429,9 @@ The Rust crates (`beam-interview`, `beam-brain-builder`, `beam-brain-runtime`) m
 | Build-your-own brain stack | `brain_platform/` (port of `beam_mind`) | Free single-user local port of the cloud's interview + extraction + Neo4j + Graphiti pipeline. No DB, no Celery, no S3 — the LLM calls go through beam-agent's existing `call_llm` BYOK infrastructure |
 | Graph persistence | Neo4j + Graphiti (required for brain_platform) | Same schema, same search, same bi-temporal edge model as the cloud. Works with Neo4j Aura (free tier, no Docker), local Docker, or Desktop |
 | Graph fallback | `GraphBackedBrainRetriever` auto-falls-back | When Neo4j is down or unconfigured, the agent uses the offline keyword retriever. No user-visible breakage |
+| Marketplace brain ingest | `beam install` auto-ingests into Neo4j | If Neo4j is configured, marketplace brains are written to Neo4j on install so `platform-search` works without a separate `platform-ingest` step. The install still completes if Neo4j is unreachable. |
+| OpenRouter compatibility | `LocalGraphStore` auto-derives `OPENAI_API_KEY` | If the user has only `OPENROUTER_API_KEY`, the store derives `OPENAI_API_KEY` + `OPENAI_BASE_URL` so Graphiti's embedder (which uses the OpenAI client directly) can authenticate. Idempotent. |
+| First-time flow | `beam` walks through API key → Neo4j → brain choice | Users who run `beam` for the first time are prompted to set up everything. The brain step offers an interactive marketplace picker (5 sec download) as an alternative to the 20-min build-your-own interview. |
 
 ---
 
