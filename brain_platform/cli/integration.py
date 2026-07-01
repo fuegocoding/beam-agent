@@ -183,13 +183,19 @@ def cmd_brain_platform_search(args: Any) -> int:
 
 
 def cmd_brain_platform_ingest(args: Any) -> int:
-    """Extract a PersonalityGraph from a file and persist to Neo4j.
+    """Ingest a file into the brain (parse → chunk → extract → write).
 
-    Usage: beam brain platform-ingest <file> [--group-id <id>]
+    Usage: beam brain platform-ingest <file> [--type TYPE] [--group-id ID]
+
+    Auto-detects the source type from the file extension (.md → obsidian,
+    .pdf → PDF, .py → code, .eml → email, etc.). Use --type to override.
+
+    Supported types: obsidian, pdf, docx, txt, code, prompt, instructions,
+    email, journal, reddit
     """
     file_path = getattr(args, "file", None)
     if not file_path:
-        print("Usage: beam brain platform-ingest <file>")
+        print("Usage: beam brain platform-ingest <file> [--type TYPE]")
         return 1
 
     path = Path(file_path)
@@ -198,26 +204,36 @@ def cmd_brain_platform_ingest(args: Any) -> int:
         return 1
 
     group_id = getattr(args, "group_id", "default_user")
+    explicit_type = getattr(args, "type", None)
 
-    # Read the file
-    try:
-        text = path.read_text()
-    except Exception as e:
-        print(f"Error reading {file_path}: {e}")
-        return 1
+    source_type = None
+    if explicit_type:
+        from brain_platform.models.enums import DataSourceType
+        try:
+            source_type = DataSourceType(explicit_type)
+        except ValueError:
+            valid = ", ".join(t.value for t in DataSourceType)
+            print(f"Error: unknown type {explicit_type!r}. Valid: {valid}")
+            return 1
 
-    # Extract + persist
     try:
         from brain_platform.services.local_graph_store import LocalGraphStore
-        from brain_platform.services.local_graph_writer import LocalGraphWriter
+        from brain_platform.services.llm_adapter import LLMAdapter
+        from brain_platform.pipeline.ingestion_orchestrator import (
+            IngestionOrchestrator, detect_source_type,
+        )
 
         store = LocalGraphStore()
         store.initialize()
         try:
-            writer = LocalGraphWriter(store)
-            result = writer.write_interview_session(
-                interview_text=text,
+            llm = LLMAdapter()
+            orch = IngestionOrchestrator(store=store, llm=llm)
+            detected = source_type or detect_source_type(str(path))
+            print(f"Ingesting {path.name} (detected: {detected.value})")
+            result = orch.ingest_file(
+                file_path=str(path),
                 group_id=group_id,
+                source_type=source_type,
             )
         finally:
             store.close()
@@ -226,9 +242,12 @@ def cmd_brain_platform_ingest(args: Any) -> int:
         print("\nIf you haven't set up Neo4j yet, run: beam brain setup-neo4j")
         return 1
 
-    print(f"\n✓ Persisted to Neo4j (group_id={group_id!r}):")
-    print(f"  Nodes created: {result['nodes_created']}")
-    print(f"  Edges created: {result['edges_created']}")
+    print(f"\n✓ Ingested {path.name} → Neo4j (group_id={group_id!r}):")
+    print(f"  Source type:  {result['source_type']}")
+    print(f"  Documents:    {result['documents']}")
+    print(f"  Chunks:       {result['chunks']}")
+    print(f"  Nodes:        {result['nodes_created']}")
+    print(f"  Edges:        {result['edges_created']}")
     return 0
 
 
@@ -559,10 +578,13 @@ def register_brain_platform_commands(subparsers: Any) -> None:
             # beam brain platform-ingest
             p = brain_subs_action.add_parser(
                 "platform-ingest",
-                help="Extract + persist a file to Neo4j (brain_platform)",
-                description="Run BrainExtractor over a file and persist the graph to Neo4j",
+                help="Ingest a file (parse → chunk → extract → write to Neo4j)",
+                description="Run the full ingestion pipeline: detect file type, parse, "
+                            "chunk, extract, and persist to Neo4j. Supports PDF, DOCX, "
+                            "Obsidian markdown, code, email, journal, reddit exports, etc.",
             )
-            p.add_argument("file", help="Path to .txt/.md file to ingest")
+            p.add_argument("file", help="Path to file to ingest (.pdf/.docx/.md/.txt/.py/.eml/...)")
+            p.add_argument("--type", help="Override detected source type (obsidian/pdf/docx/txt/code/prompt/instructions/email/journal/reddit)")
             p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
             p.set_defaults(func=cmd_brain_platform_ingest)
 

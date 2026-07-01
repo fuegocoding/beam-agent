@@ -452,3 +452,260 @@ class TestPersonalityRefinerOrphanFix:
         src = inspect.getsource(PersonalityRefiner._fix_orphan_nodes)
         # Should call .get() on HUB_EDGE_MAP
         assert "HUB_EDGE_MAP.get" in src or "HUB_EDGE_MAP[" in src
+
+
+# ──────────────────────────────────────────────────────────────────────
+# pipeline/ingestion_orchestrator.py — the import pipeline
+# ──────────────────────────────────────────────────────────────────────
+
+class TestDetectSourceType:
+    """Auto-detection from file extension."""
+
+    def test_markdown_defaults_to_obsidian(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("essay.md") == DataSourceType.OBSIDIAN
+        assert detect_source_type("notes.markdown") == DataSourceType.OBSIDIAN
+
+    def test_text_files(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("readme.txt") == DataSourceType.TXT
+        assert detect_source_type("notes.text") == DataSourceType.TXT
+
+    def test_code_files(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("script.py") == DataSourceType.CODE
+        assert detect_source_type("app.js") == DataSourceType.CODE
+        assert detect_source_type("component.tsx") == DataSourceType.CODE
+        assert detect_source_type("lib.rs") == DataSourceType.CODE
+        assert detect_source_type("Main.go") == DataSourceType.CODE
+        assert detect_source_type("Main.GO") == DataSourceType.CODE  # case insensitive
+
+    def test_email_files(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("inbox.eml") == DataSourceType.EMAIL
+        assert detect_source_type("all.mbox") == DataSourceType.EMAIL
+
+    def test_pdf_and_docx(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("paper.pdf") == DataSourceType.PDF
+        assert detect_source_type("report.docx") == DataSourceType.DOCX
+
+    def test_unknown_extension_falls_back_to_txt(self):
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("data.xyz") == DataSourceType.TXT
+        assert detect_source_type("noextension") == DataSourceType.TXT
+
+    def test_json_defaults_to_reddit(self):
+        """Most .json in this context is a Reddit data export."""
+        from brain_platform.pipeline.ingestion_orchestrator import detect_source_type
+        from brain_platform.models.enums import DataSourceType
+
+        assert detect_source_type("comments.json") == DataSourceType.REDDIT
+
+
+class TestIngestionOrchestratorFileNotFound:
+    def test_missing_file_raises(self):
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+
+        orch = IngestionOrchestrator(store=MagicMock(), llm=MagicMock())
+        with pytest.raises(FileNotFoundError, match="not found"):
+            orch.ingest_file(
+                file_path="/nonexistent/path.txt",
+                group_id="test",
+            )
+
+
+class TestIngestionOrchestratorIngestFile:
+    """The full parse → chunk → extract → write pipeline, mocked."""
+
+    def test_runs_full_pipeline(self, tmp_path, capsys):
+        """Happy path: parser produces chunks, extractor runs, writer persists."""
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+        from brain_platform.pipeline.parsers.base import ParseResult
+        from brain_platform.pipeline.brain_schema import PersonalityGraph
+        from brain_platform.models.enums import DataSourceType
+
+        # Create a real file to ingest
+        test_file = tmp_path / "essay.md"
+        test_file.write_text("# My Story\n\nI value autonomy and honesty.\n")
+
+        # Mock the parser
+        mock_parser = MagicMock()
+        mock_parser.parse.return_value = [
+            ParseResult(
+                text="I value autonomy and honesty.",
+                title="My Story",
+                metadata={"source": "obsidian"},
+            ),
+        ]
+
+        # Mock the chunker
+        mock_chunker = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.text = "I value autonomy and honesty."
+        mock_chunker.chunk.return_value = [mock_chunk]
+
+        # Mock the extractor
+        mock_extractor = MagicMock()
+        mock_graph = MagicMock(spec=PersonalityGraph)
+        mock_extractor.extract.return_value = mock_graph
+
+        # Mock the writer
+        mock_writer = MagicMock()
+        mock_writer.write.return_value = {"nodes_created": 5, "edges_created": 3}
+
+        # Mock the store (used for client.llm_client)
+        mock_store = MagicMock()
+        mock_store.client.llm_client = MagicMock()
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.get_parser", return_value=mock_parser), \
+             patch("brain_platform.pipeline.ingestion_orchestrator.SemanticChunker", return_value=mock_chunker), \
+             patch("brain_platform.services.local_graph_writer.LocalGraphWriter", return_value=mock_writer), \
+             patch("brain_platform.extractor.brain_extractor.BrainExtractor", return_value=mock_extractor):
+            orch = IngestionOrchestrator(store=mock_store, llm=MagicMock())
+            result = orch.ingest_file(
+                file_path=str(test_file),
+                group_id="test_group",
+            )
+
+        assert result["documents"] == 1
+        assert result["chunks"] == 1
+        assert result["nodes_created"] == 5
+        assert result["edges_created"] == 3
+        assert result["source_type"] == "obsidian"  # .md → obsidian
+        assert mock_extractor.extract.called
+        assert mock_writer.write.called
+
+    def test_explicit_type_override(self, tmp_path):
+        """--type flag overrides auto-detection."""
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+        from brain_platform.models.enums import DataSourceType
+
+        test_file = tmp_path / "something.md"
+        test_file.write_text("content")
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.get_parser") as mock_get_parser:
+            mock_parser = MagicMock()
+            mock_parser.parse.return_value = []
+            mock_get_parser.return_value = mock_parser
+
+            with patch("brain_platform.pipeline.ingestion_orchestrator.SemanticChunker"):
+                orch = IngestionOrchestrator(store=MagicMock(), llm=MagicMock())
+                result = orch.ingest_file(
+                    file_path=str(test_file),
+                    group_id="test",
+                    source_type=DataSourceType.CODE,  # Override
+                )
+
+        # Should have used CODE parser, not OBSIDIAN
+        from brain_platform.models.enums import DataSourceType
+        called_with = mock_get_parser.call_args[0][0]
+        assert called_with == DataSourceType.CODE
+        assert result["source_type"] == "code"
+
+    def test_parser_fallback_to_txt_on_import_error(self, tmp_path):
+        """If the chosen parser's dep is missing, fall back to TXT."""
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+        from brain_platform.models.enums import DataSourceType
+
+        test_file = tmp_path / "doc.pdf"
+        test_file.write_text("text content")
+
+        call_count = [0]
+
+        def get_parser_side_effect(source_type):
+            call_count[0] += 1
+            if source_type == DataSourceType.PDF:
+                raise ImportError("pymupdf not installed")
+            # TXT parser works
+            mock_parser = MagicMock()
+            mock_parser.parse.return_value = []
+            return mock_parser
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.get_parser", side_effect=get_parser_side_effect), \
+             patch("brain_platform.pipeline.ingestion_orchestrator.SemanticChunker"):
+            orch = IngestionOrchestrator(store=MagicMock(), llm=MagicMock())
+            result = orch.ingest_file(
+                file_path=str(test_file),
+                group_id="test",
+            )
+
+        # PDF parser was tried, then fell back to TXT
+        assert call_count[0] == 2
+        assert result["source_type"] == "txt"
+
+    def test_handles_no_chunks(self, tmp_path):
+        """If parsing produces no chunks, return zeros without crashing."""
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+
+        test_file = tmp_path / "empty.md"
+        test_file.write_text("")
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.get_parser") as mock_get_parser, \
+             patch("brain_platform.pipeline.ingestion_orchestrator.SemanticChunker") as mock_chunker_cls:
+            mock_parser = MagicMock()
+            mock_parser.parse.return_value = []  # No parse results
+            mock_get_parser.return_value = mock_parser
+
+            mock_chunker = MagicMock()
+            mock_chunker.chunk.return_value = []
+            mock_chunker_cls.return_value = mock_chunker
+
+            orch = IngestionOrchestrator(store=MagicMock(), llm=MagicMock())
+            result = orch.ingest_file(
+                file_path=str(test_file),
+                group_id="test",
+            )
+
+        assert result["chunks"] == 0
+        assert result["nodes_created"] == 0
+        assert result["edges_created"] == 0
+
+
+class TestIngestionOrchestratorIngestText:
+    """ingest_text — raw text without a file or parser."""
+
+    def test_basic_text_ingestion(self):
+        from brain_platform.pipeline.ingestion_orchestrator import IngestionOrchestrator
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.SemanticChunker") as mock_chunker_cls, \
+             patch("brain_platform.services.local_graph_writer.LocalGraphWriter") as mock_writer_cls, \
+             patch("brain_platform.extractor.brain_extractor.BrainExtractor") as mock_extractor_cls:
+            mock_chunker = MagicMock()
+            mock_chunk = MagicMock()
+            mock_chunk.text = "raw text"
+            mock_chunker.chunk.return_value = [mock_chunk]
+            mock_chunker_cls.return_value = mock_chunker
+
+            mock_writer = MagicMock()
+            mock_writer.write.return_value = {"nodes_created": 2, "edges_created": 1}
+            mock_writer_cls.return_value = mock_writer
+
+            mock_extractor = MagicMock()
+            mock_extractor.extract.return_value = MagicMock()
+            mock_extractor_cls.return_value = mock_extractor
+
+            mock_store = MagicMock()
+            mock_store.client.llm_client = MagicMock()
+
+            orch = IngestionOrchestrator(store=mock_store, llm=MagicMock())
+            result = orch.ingest_text(
+                text="raw text content",
+                group_id="test",
+            )
+
+        assert result["documents"] == 1
+        assert result["chunks"] == 1
+        assert result["nodes_created"] == 2

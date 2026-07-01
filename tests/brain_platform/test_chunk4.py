@@ -194,22 +194,30 @@ class TestCmdBrainPlatformIngest:
 
         with patch("brain_platform.services.local_graph_store.LocalGraphStore") as MockStore:
             store_instance = MagicMock()
+            store_instance.client.llm_client = MagicMock()
             MockStore.return_value = store_instance
 
-            with patch("brain_platform.services.local_graph_writer.LocalGraphWriter") as MockWriter:
-                writer_instance = MagicMock()
-                writer_instance.write_interview_session.return_value = {
-                    "nodes_created": 5, "edges_created": 3,
-                }
-                MockWriter.return_value = writer_instance
+            with patch("brain_platform.services.llm_adapter.LLMAdapter"):
+                with patch("brain_platform.pipeline.ingestion_orchestrator.IngestionOrchestrator") as MockOrch:
+                    orch_instance = MagicMock()
+                    orch_instance.ingest_file.return_value = {
+                        "documents": 1,
+                        "chunks": 1,
+                        "nodes_created": 5,
+                        "edges_created": 3,
+                        "source_type": "txt",
+                        "file": str(test_file),
+                        "size_bytes": 100,
+                    }
+                    MockOrch.return_value = orch_instance
 
-                args = MagicMock(file=str(test_file), group_id="test")
-                result = cmd_brain_platform_ingest(args)
+                    args = MagicMock(file=str(test_file), group_id="test", type=None)
+                    result = cmd_brain_platform_ingest(args)
 
         assert result == 0
         captured = capsys.readouterr()
-        assert "Nodes created: 5" in captured.out
-        assert "Edges created: 3" in captured.out
+        assert "Nodes:        5" in captured.out
+        assert "Edges:        3" in captured.out
 
     def test_missing_file(self, capsys):
         from brain_platform.cli.integration import cmd_brain_platform_ingest
@@ -410,3 +418,83 @@ class TestGraphBackedBrainRetriever:
             facts = retriever.retrieve("test")
 
         assert facts == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 6: cmd_brain_platform_ingest with --type flag and orchestrator
+# ──────────────────────────────────────────────────────────────────────
+
+class TestCmdBrainPlatformIngestWithType:
+    def test_type_flag_registered(self):
+        from brain_platform.cli.integration import register_brain_platform_commands
+        import argparse
+
+        parent = argparse.ArgumentParser()
+        parent_sub = parent.add_subparsers(dest="cmd")
+        parent_brain = parent_sub.add_parser("brain")
+        parent_brain.add_subparsers(dest="brain_action")
+
+        register_brain_platform_commands(parent_sub)
+
+        args = parent.parse_args(["brain", "platform-ingest", "file.txt", "--type", "code"])
+        assert args.type == "code"
+
+    def test_type_flag_optional(self):
+        from brain_platform.cli.integration import register_brain_platform_commands
+        import argparse
+
+        parent = argparse.ArgumentParser()
+        parent_sub = parent.add_subparsers(dest="cmd")
+        parent_brain = parent_sub.add_parser("brain")
+        parent_brain.add_subparsers(dest="brain_action")
+
+        register_brain_platform_commands(parent_sub)
+
+        args = parent.parse_args(["brain", "platform-ingest", "file.txt"])
+        assert args.type is None  # Auto-detect
+
+    def test_invalid_type_rejected(self, tmp_path, monkeypatch):
+        from brain_platform.cli.integration import cmd_brain_platform_ingest
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        args = MagicMock(file=str(test_file), group_id="test", type="bogus_type")
+        result = cmd_brain_platform_ingest(args)
+        assert result == 1
+
+
+class TestCmdBrainPlatformIngestUsesOrchestrator:
+    def test_routes_through_ingestion_orchestrator(self, tmp_path):
+        """The CLI should use the IngestionOrchestrator, not read raw text."""
+        from brain_platform.cli.integration import cmd_brain_platform_ingest
+
+        test_file = tmp_path / "essay.md"
+        test_file.write_text("# Test\n\nContent here.")
+
+        with patch("brain_platform.pipeline.ingestion_orchestrator.IngestionOrchestrator") as MockOrch:
+            orch_instance = MagicMock()
+            orch_instance.ingest_file.return_value = {
+                "documents": 1,
+                "chunks": 2,
+                "nodes_created": 10,
+                "edges_created": 5,
+                "source_type": "obsidian",
+                "file": str(test_file),
+                "size_bytes": 100,
+            }
+            MockOrch.return_value = orch_instance
+
+            with patch("brain_platform.services.local_graph_store.LocalGraphStore"):
+                with patch("brain_platform.services.llm_adapter.LLMAdapter"):
+                    args = MagicMock(file=str(test_file), group_id="test", type=None)
+                    result = cmd_brain_platform_ingest(args)
+
+        assert result == 0
+        # Verify IngestionOrchestrator.ingest_file was called
+        orch_instance.ingest_file.assert_called_once()
+        call_kwargs = orch_instance.ingest_file.call_args.kwargs
+        assert call_kwargs["file_path"] == str(test_file)
+        assert call_kwargs["group_id"] == "test"
+        # No explicit source_type → auto-detect (None)
+        assert call_kwargs["source_type"] is None
