@@ -378,3 +378,77 @@ class TestGraphReader:
         assert data.edges[0].relation == "INFORMS"
         assert len(data.node_summaries) == 1
         assert len(data.edge_facts) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# pipeline/personality_refiner.py — HUB_EDGE_MAP + dedup + orphan fix
+# ──────────────────────────────────────────────────────────────────────
+
+class TestPersonalityRefinerHUB_EDGE_MAP:
+    def test_class_attribute_exists(self):
+        """The HUB_EDGE_MAP class attribute must match the cloud."""
+        from brain_platform.pipeline.personality_refiner import PersonalityRefiner
+
+        assert hasattr(PersonalityRefiner, "HUB_EDGE_MAP")
+        m = PersonalityRefiner.HUB_EDGE_MAP
+        # Must have all 10 construct types
+        assert "PersonalityTrait" in m
+        assert "Belief" in m
+        assert "Value" in m
+        assert "Boundary" in m
+        assert "LifeEvent" in m
+        assert "EpisodicMemory" in m
+        assert "KnowledgeDomain" in m
+        assert "SocialPattern" in m
+        assert "StyleProfile" in m
+        assert "CognitivePattern" in m
+        # Edge types must match the cloud
+        assert m["PersonalityTrait"] == "HAS_TRAIT"
+        assert m["Belief"] == "HOLDS"
+        assert m["Value"] == "DRIVEN_BY"
+        assert m["CognitivePattern"] == "HAS_TRAIT"
+
+    def test_used_by_create_hub_edges(self):
+        """_create_hub_edges should use HUB_EDGE_MAP (not hardcoded INVOLVES)."""
+        from brain_platform.pipeline.personality_refiner import PersonalityRefiner
+        import inspect
+        src = inspect.getsource(PersonalityRefiner._create_hub_edges)
+        assert "HUB_EDGE_MAP" in src
+        # Should NOT have the old inline HUB_EDGE_FOR_TYPE dict
+        assert "HUB_EDGE_FOR_TYPE" not in src
+
+    def test_used_by_fix_orphan_nodes(self):
+        """_fix_orphan_nodes should use HUB_EDGE_MAP for orphan classification."""
+        from brain_platform.pipeline.personality_refiner import PersonalityRefiner
+        import inspect
+        src = inspect.getsource(PersonalityRefiner._fix_orphan_nodes)
+        assert "HUB_EDGE_MAP" in src
+
+
+class TestPersonalityRefinerDedup:
+    def test_dedup_person_nodes_finds_duplicates(self):
+        """_dedup_person_nodes queries for short-named duplicate nodes."""
+        from brain_platform.pipeline.personality_refiner import PersonalityRefiner
+        import inspect
+        src = inspect.getsource(PersonalityRefiner._dedup_person_nodes)
+
+        # Must have the dedup logic (Cypher + redirect + delete)
+        assert "toLower(trim(n.name))" in src, "missing normalize-name step"
+        assert "WHERE size(nodes) > 1" in src, "missing duplicate filter"
+        assert "RELATES_TO" in src, "missing edge redirect"
+        assert "MENTIONS" in src, "missing MENTIONS handling"
+        assert "DETACH DELETE" in src, "missing delete step"
+        assert "merged_count" in src, "missing return value"
+        # Must pick canonical as Entity-only
+        assert "Entity" in src, "missing canonical selection logic"
+
+
+class TestPersonalityRefinerOrphanFix:
+    def test_uses_hub_edge_map_for_edge_type(self):
+        """_fix_orphan_nodes should look up edge type from HUB_EDGE_MAP,
+        not hardcode INVOLVES."""
+        from brain_platform.pipeline.personality_refiner import PersonalityRefiner
+        import inspect
+        src = inspect.getsource(PersonalityRefiner._fix_orphan_nodes)
+        # Should call .get() on HUB_EDGE_MAP
+        assert "HUB_EDGE_MAP.get" in src or "HUB_EDGE_MAP[" in src

@@ -127,6 +127,20 @@ class PersonalityRefiner:
     Mirrors the cloud's PersonalityRefiner but with a sync API.
     """
 
+    # ── Hub edge type mapping (mirror of cloud's class attribute) ──
+    HUB_EDGE_MAP = {
+        "PersonalityTrait": "HAS_TRAIT",
+        "Belief": "HOLDS",
+        "Value": "DRIVEN_BY",
+        "Boundary": "DRIVEN_BY",
+        "LifeEvent": "EXPERIENCED",
+        "EpisodicMemory": "EXPERIENCED",
+        "KnowledgeDomain": "EXPERT_IN",
+        "SocialPattern": "HANDLES_CONFLICT_BY",
+        "StyleProfile": "COMMUNICATES_VIA",
+        "CognitivePattern": "HAS_TRAIT",
+    }
+
     def refine(
         self,
         interview_text: str,
@@ -434,60 +448,64 @@ class PersonalityRefiner:
     ) -> int:
         """Create THE_USER → all-nodes hub edges for new nodes.
 
-        Mirrors the cloud's _create_hub_edges.
+        Mirrors the cloud's _create_hub_edges: queries nodes with
+        construct-type labels that aren't already connected to
+        THE_USER, then creates the appropriate hub edge based on
+        :attr:`HUB_EDGE_MAP`.
         """
         from graphiti_core.edges import EntityEdge
 
         neo4j_client = driver.client
-        result = await neo4j_client.execute_query(
+
+        # Find THE_USER
+        user_result = await neo4j_client.execute_query(
             "MATCH (n) WHERE n.group_id = $gid AND n.name = 'THE_USER' "
-            "RETURN n.uuid AS uuid LIMIT 1",
+            "RETURN n.uuid AS uuid",
             parameters_={"gid": group_id},
         )
-        if not result.records:
+        if not user_result.records:
+            logger.warning("THE_USER node not found in graph")
             return 0
-        user_uuid = result.records[0]["uuid"]
+        user_uuid = user_result.records[0]["uuid"]
 
-        # Find new nodes that don't have a hub edge yet
-        new_nodes_result = await neo4j_client.execute_query(
+        # Find construct nodes NOT already connected to THE_USER
+        construct_types = list(self.HUB_EDGE_MAP.keys())
+        result = await neo4j_client.execute_query(
             """
-            MATCH (n) WHERE n.group_id = $gid
-            AND n.name <> 'THE_USER'
-            AND NOT (n)-[:RELATES_TO]-({name: 'THE_USER', group_id: $gid})
+            MATCH (n)
+            WHERE n.group_id = $gid
+            AND any(label IN labels(n) WHERE label IN $types)
+            AND n.uuid <> $user_uuid
+            AND NOT EXISTS {
+                MATCH (u {uuid: $user_uuid})-[:RELATES_TO|MENTIONS]-(n)
+            }
             RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels
             """,
-            parameters_={"gid": group_id},
+            parameters={
+                "gid": group_id,
+                "types": construct_types,
+                "user_uuid": user_uuid,
+            },
         )
 
-        HUB_EDGE_FOR_TYPE = {
-            "PersonalityTrait": "HAS_TRAIT",
-            "Belief": "HOLDS",
-            "Value": "DRIVEN_BY",
-            "Boundary": "DRIVEN_BY",
-            "LifeEvent": "EXPERIENCED",
-            "EpisodicMemory": "EXPERIENCED",
-            "CognitivePattern": "HAS_TRAIT",
-            "SocialPattern": "HANDLES_CONFLICT_BY",
-            "KnowledgeDomain": "EXPERT_IN",
-            "StyleProfile": "COMMUNICATES_VIA",
-        }
-
         edges_created = 0
-        for record in new_nodes_result.records:
-            node_uuid = record["uuid"]
-            node_name = record["name"]
-            labels = record["labels"]
-            primary = next(
-                (l for l in labels if l not in ("Entity", "Node")),
-                "Entity",
+        for record in result.records:
+            node_labels = record["labels"]
+            # Pick the most specific type for edge mapping
+            node_type = next(
+                (lbl for lbl in node_labels if lbl in self.HUB_EDGE_MAP),
+                None,
             )
-            hub_type = HUB_EDGE_FOR_TYPE.get(primary, "INVOLVES")
+            if not node_type:
+                continue
+
+            edge_type = self.HUB_EDGE_MAP[node_type]
             edge = EntityEdge(
                 source_node_uuid=user_uuid,
-                target_node_uuid=node_uuid,
-                name=hub_type,
+                target_node_uuid=record["uuid"],
+                name=edge_type,
                 group_id=group_id,
-                fact=f"THE_USER {hub_type.lower().replace('_', ' ')} {node_name}",
+                fact=f"THE_USER {edge_type.lower().replace('_', ' ')} {record['name'][:80]}",
                 created_at=datetime.now(timezone.utc),
                 valid_at=datetime.now(timezone.utc),
             )
@@ -497,64 +515,164 @@ class PersonalityRefiner:
         return edges_created
 
     async def _dedup_person_nodes(self, driver: Any, group_id: str) -> int:
-        """Merge misclassified person nodes (Entity labels that should be Person)."""
+        """Merge duplicate person nodes that were misclassified as personality constructs.
+
+        Mirrors the cloud's _dedup_person_nodes: finds short-named
+        nodes (likely people) that appear multiple times in the
+        graph, picks a canonical one (preferring the Entity-only
+        typed node), redirects all RELATES_TO and MENTIONS edges
+        from the duplicates to the canonical node, then deletes
+        the duplicates.
+        """
         neo4j_client = driver.client
+
+        # Find short-named nodes (likely people) that appear multiple times
         result = await neo4j_client.execute_query(
             """
-            MATCH (n) WHERE n.group_id = $gid
-            AND 'Entity' IN labels(n) AND size(labels(n)) = 1
-            AND NOT n.name = 'THE_USER'
-            RETURN n.uuid AS uuid, n.name AS name LIMIT 50
+            MATCH (n)
+            WHERE n.group_id = $gid
+            AND NOT 'Episodic' IN labels(n)
+            AND NOT 'Saga' IN labels(n)
+            AND NOT 'CommunityNode' IN labels(n)
+            AND size(n.name) < 30
+            WITH toLower(trim(n.name)) AS normalized, collect(n) AS nodes
+            WHERE size(nodes) > 1
+            RETURN normalized, [n IN nodes | {uuid: n.uuid, name: n.name, labels: labels(n)}] AS dupes
             """,
             parameters_={"gid": group_id},
         )
-        # Cloud's logic uses a naming heuristic to identify likely-person
-        # nodes and merge them. The local port keeps the count of
-        # candidates so the caller knows how many were considered.
-        return len(result.records)
+
+        merged_count = 0
+        for record in result.records:
+            dupes = record["dupes"]
+            if len(dupes) <= 1:
+                continue
+
+            # Prefer the Entity-only typed node as canonical
+            canonical = next(
+                (d for d in dupes if set(d["labels"]) == {"Entity"}),
+                dupes[0],  # fallback to first
+            )
+            canonical_uuid = canonical["uuid"]
+
+            for dupe in dupes:
+                if dupe["uuid"] == canonical_uuid:
+                    continue
+
+                dupe_uuid = dupe["uuid"]
+                logger.info(
+                    "  Merging '%s' (%s) into canonical '%s'",
+                    dupe["name"],
+                    [l for l in dupe["labels"] if l != "Entity"],
+                    canonical["name"],
+                )
+
+                # Redirect outgoing RELATES_TO edges
+                await neo4j_client.execute_query(
+                    """
+                    MATCH (dup {uuid: $dup_uuid})-[r:RELATES_TO]->(target)
+                    WHERE NOT EXISTS {
+                        MATCH (canon {uuid: $canon_uuid})-[:RELATES_TO]->(target)
+                    }
+                    CREATE (canon {uuid: $canon_uuid})-[r2:RELATES_TO]->(target)
+                    SET r2 = properties(r)
+                    DELETE r
+                    """,
+                    parameters={"dup_uuid": dupe_uuid, "canon_uuid": canonical_uuid},
+                )
+
+                # Redirect incoming RELATES_TO edges
+                await neo4j_client.execute_query(
+                    """
+                    MATCH (source)-[r:RELATES_TO]->(dup {uuid: $dup_uuid})
+                    WHERE NOT EXISTS {
+                        MATCH (source)-[:RELATES_TO]->(canon {uuid: $canon_uuid})
+                    }
+                    CREATE (source)-[r2:RELATES_TO]->(canon {uuid: $canon_uuid})
+                    SET r2 = properties(r)
+                    DELETE r
+                    """,
+                    parameters={"dup_uuid": dupe_uuid, "canon_uuid": canonical_uuid},
+                )
+
+                # Redirect MENTIONS edges
+                await neo4j_client.execute_query(
+                    """
+                    MATCH (dup {uuid: $dup_uuid})-[r:MENTIONS]-(other)
+                    DELETE r
+                    """,
+                    parameters={"dup_uuid": dupe_uuid},
+                )
+
+                # Delete the duplicate node
+                await neo4j_client.execute_query(
+                    "MATCH (n {uuid: $uuid}) DETACH DELETE n",
+                    parameters={"uuid": dupe_uuid},
+                )
+                merged_count += 1
+
+        return merged_count
 
     async def _fix_orphan_nodes(
         self, driver: Any, embedder: Any, group_id: str
     ) -> int:
-        """Connect orphan nodes (no hub edge, no edges) to THE_USER."""
+        """Connect any remaining orphan nodes to THE_USER.
+
+        Mirrors the cloud's _fix_orphan_nodes: uses
+        :attr:`HUB_EDGE_MAP` to pick the right edge type for each
+        orphan based on its label.
+        """
         from graphiti_core.edges import EntityEdge
 
         neo4j_client = driver.client
-        result = await neo4j_client.execute_query(
-            """
-            MATCH (n) WHERE n.group_id = $gid
-            AND n.name <> 'THE_USER'
-            AND NOT (n)-[]-()
-            RETURN n.uuid AS uuid, n.name AS name LIMIT 20
-            """,
-            parameters_={"gid": group_id},
-        )
-        if not result.records:
-            return 0
 
+        # Find THE_USER
         user_result = await neo4j_client.execute_query(
-            "MATCH (n) WHERE n.group_id = $gid AND n.name = 'THE_USER' "
-            "RETURN n.uuid AS uuid LIMIT 1",
-            parameters_={"gid": group_id},
+            "MATCH (n) WHERE n.group_id = $gid AND n.name = 'THE_USER' RETURN n.uuid AS uuid",
+            parameters={"gid": group_id},
         )
         if not user_result.records:
             return 0
         user_uuid = user_result.records[0]["uuid"]
 
+        # Find orphan nodes (no RELATES_TO or MENTIONS connections)
+        result = await neo4j_client.execute_query(
+            """
+            MATCH (n)
+            WHERE n.group_id = $gid
+            AND NOT 'Episodic' IN labels(n)
+            AND NOT 'Saga' IN labels(n)
+            AND NOT 'CommunityNode' IN labels(n)
+            AND n.uuid <> $user_uuid
+            AND NOT (n)-[:RELATES_TO|MENTIONS]-()
+            RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels
+            """,
+            parameters={"gid": group_id, "user_uuid": user_uuid},
+        )
+
         edges_created = 0
         for record in result.records:
+            node_labels = record["labels"]
+            node_type = next(
+                (lbl for lbl in node_labels if lbl in self.HUB_EDGE_MAP),
+                None,
+            )
+            edge_type = self.HUB_EDGE_MAP.get(node_type, "INVOLVES")
+
             edge = EntityEdge(
                 source_node_uuid=user_uuid,
                 target_node_uuid=record["uuid"],
-                name="INVOLVES",
+                name=edge_type,
                 group_id=group_id,
-                fact=f"THE_USER involves {record['name']}",
+                fact=f"THE_USER {edge_type.lower().replace('_', ' ')} {record['name'][:80]}",
                 created_at=datetime.now(timezone.utc),
                 valid_at=datetime.now(timezone.utc),
             )
             await edge.generate_embedding(embedder)
             await edge.save(driver)
             edges_created += 1
+            logger.info("  Fixed orphan: THE_USER --%s--> %s", edge_type, record["name"][:50])
+
         return edges_created
 
 
