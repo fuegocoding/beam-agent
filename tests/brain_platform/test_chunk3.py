@@ -371,3 +371,50 @@ class TestGraphitiPrompts:
         messages = custom_extract_text(context)
         user_content = messages[1].content
         assert "SYNTHESIS MODE" in user_content
+
+
+class TestOpenAICompatEnvDerivation:
+    """Graphiti's embedder needs OPENAI_API_KEY directly. This helper
+    derives it from OPENROUTER_API_KEY so users with only an OpenRouter
+    key can run brain_platform."""
+
+    def test_openrouter_derives_openai_key(self, monkeypatch):
+        import os
+        from brain_platform.services.local_graph_store import _ensure_openai_compat_env
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        _ensure_openai_compat_env()
+
+        assert os.environ.get("OPENAI_API_KEY") == "sk-or-v1-test"
+        assert os.environ.get("OPENAI_BASE_URL") == "https://openrouter.ai/api/v1"
+
+    def test_explicit_openai_key_not_overridden(self, monkeypatch):
+        import os
+        from brain_platform.services.local_graph_store import _ensure_openai_compat_env
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-openrouter")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-key")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+        _ensure_openai_compat_env()
+
+        # Explicit OPENAI_* must NOT be overridden by the OpenRouter derivation
+        assert os.environ.get("OPENAI_API_KEY") == "sk-real-openai-key"
+        assert os.environ.get("OPENAI_BASE_URL") == "https://api.openai.com/v1"
+
+    def test_no_openrouter_key_is_noop(self, monkeypatch):
+        import os
+        from brain_platform.services.local_graph_store import _ensure_openai_compat_env
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        _ensure_openai_compat_env()
+
+        # Nothing to derive from — both vars stay unset
+        assert os.environ.get("OPENAI_API_KEY") is None
+        assert os.environ.get("OPENAI_BASE_URL") is None

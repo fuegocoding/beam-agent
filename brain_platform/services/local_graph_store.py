@@ -49,9 +49,62 @@ DEFAULT_PASSWORD = "neo4j"  # Neo4j's default dev password; users MUST change
 
 
 def _env(name: str, default: str) -> str:
-    """Read an env var, returning ``default`` if unset or empty."""
+    """Read an env var, returning ``default`` if unset or empty.
+
+    Checks the process environment first, then falls back to
+    ``~/.hermes/.env`` (where the ``beam brain setup-neo4j`` wizard
+    writes the config). The .env fallback is important because the
+    setup wizard writes to the file but doesn't export to the parent
+    shell — without this fallback, users would need to manually
+    ``source ~/.hermes/.env`` after running the wizard.
+    """
     import os
-    return os.environ.get(name) or default
+    val = os.environ.get(name)
+    if val:
+        return val
+    # Fall back to ~/.hermes/.env via beam-agent's existing loader
+    try:
+        from hermes_cli.config import load_env
+        env = load_env()
+        val = env.get(name)
+        if val:
+            return val
+    except Exception:
+        pass
+    return default
+
+
+def _ensure_openai_compat_env():
+    """If Graphiti's embedder needs OPENAI_API_KEY but only OPENROUTER_API_KEY
+    is set, derive OPENAI_API_KEY + OPENAI_BASE_URL from OpenRouter.
+
+    Graphiti instantiates its own OpenAI client for embeddings (it does
+    not go through beam-agent's ``call_llm``). If the user has only
+    configured OpenRouter, the embedder would fail with "api_key client
+    option must be set". This helper bridges that gap: any user with
+    ``OPENROUTER_API_KEY`` can run brain_platform without separately
+    setting ``OPENAI_API_KEY``.
+
+    Idempotent — only sets the vars if they're not already set.
+
+    IMPORTANT: this must run BEFORE ``import graphiti_core`` because
+    Graphiti creates its default embedder at import time. The
+    module-level call below handles that.
+    """
+    import os
+    if not os.environ.get("OPENAI_API_KEY"):
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+        if openrouter_key:
+            os.environ["OPENAI_API_KEY"] = openrouter_key
+            # Only set the base URL if not already configured
+            os.environ.setdefault("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+
+
+# Run the env-derivation at import time so it's in place before
+# ``import graphiti_core`` triggers the default embedder's OpenAI
+# client construction. This is what makes the OpenRouter-only
+# configuration work without users having to set OPENAI_API_KEY.
+_ensure_openai_compat_env()
 
 
 class LocalGraphStore:
@@ -92,6 +145,11 @@ class LocalGraphStore:
         from graphiti_core import Graphiti
 
         from brain_platform.pipeline.graphiti_prompts import apply_prompt_overrides
+
+        # If the user configured OpenRouter, derive OPENAI_API_KEY from
+        # it so Graphiti's embedder (which uses the OpenAI client
+        # directly) can authenticate.
+        _ensure_openai_compat_env()
 
         # Apply personality-aware extraction prompts before any
         # add_episode() calls. The cloud does this in initialize()
