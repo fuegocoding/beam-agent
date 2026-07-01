@@ -1,8 +1,7 @@
 """Coverage types — standalone dataclasses used by gap_identifier and coverage_scorer.
 
-This file exists so `gap_identifier.py` can be lifted as-is in Chunk 1
-without pulling in `coverage_scorer.py`'s SQLAlchemy/PostgreSQL dependencies.
-The full `coverage_scorer.py` (with the actual scoring logic) is a Chunk 2 lift.
+Kept as a leaf module (no DB imports) so the scoring and gap-detection
+logic stays portable and unit-testable without SQLAlchemy/PostgreSQL.
 """
 from dataclasses import dataclass
 

@@ -1,8 +1,8 @@
-"""Models enums stub — minimal set of enums used by Tier 1 lifted files.
+"""Models enums stub — minimal set of enums used by Tier 1 and Tier 2 lifted files.
 
-Only includes the enums that are imported by the files we lift in Chunk 1.
-Chunk 2 (adapt phase) may add more; full enums live in the cloud's
-``models/enums.py`` and will be lifted then as needed.
+Lifted from the cloud's ``models/enums.py`` (private). The cloud has
+~20 enums; this stub only includes the ones imported by the files we
+lift in Chunks 1-2. Other enums land as needed.
 """
 import enum
 
@@ -23,3 +23,22 @@ class DataSourceType(str, enum.Enum):
     CODE = "code"
     PROMPT = "prompt"
     INSTRUCTIONS = "instructions"
+
+
+class InterviewMode(str, enum.Enum):
+    """Routing mode for the guided interview."""
+
+    LINEAR = "linear"       # Original fixed 14-question sequence
+    REACTIVE = "reactive"   # Dimension-gap-driven dynamic routing
+    EXPRESS = "express"     # 10-question fixed subset
+
+
+class ProfessionalCategory(str, enum.Enum):
+    """Professional sector for the work-session follow-up question bank."""
+
+    SOFTWARE_ENGINEER = "software_engineer"
+    PRODUCT_MANAGER = "product_manager"
+    EDUCATOR = "educator"
+    FINANCIAL_PROFESSIONAL = "financial_professional"
+    DATA_SCIENTIST = "data_scientist"
+    UX_DESIGNER = "ux_designer"
