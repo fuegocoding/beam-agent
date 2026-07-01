@@ -1117,9 +1117,11 @@ class TestBrainInstallSlashCommand:
             with redirect_stdout(buf):
                 cmd_brain_list()
             output = buf.getvalue()
-            assert "No brains installed" in output
-            assert "beam install" in output
+            assert "(none" in output  # empty installed section
+            assert "beam brain install" in output
             assert "interactive picker" in output
+            # Empty state should still show the available marketplace
+            assert "Available from marketplace" in output
 
     def test_brain_list_prompts_install_when_brains_exist(self):
         """When /brain list shows existing brains, also suggest install."""
@@ -1136,6 +1138,65 @@ class TestBrainInstallSlashCommand:
             output = buf.getvalue()
             assert "bill-gates" in output
             assert "beam brain install" in output
+
+    def test_brain_list_shows_uninstalled_marketplace_brains(self):
+        """Brains from the marketplace that aren't installed should
+        appear under 'Available from marketplace' with the · marker."""
+        from hermes_cli.brain_cmds import cmd_brain_list
+        import io
+        from contextlib import redirect_stdout
+
+        # bill-gates is installed; everything else should be "available"
+        with patch("brain.paths.list_brains", return_value=[
+            {"name": "bill-gates", "source": "marketplace-official", "active": True, "has_token": False},
+        ]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_brain_list()
+            output = buf.getvalue()
+
+        # Installed section
+        assert "Installed brains" in output
+        assert "bill-gates" in output
+        assert "ACTIVE" in output
+
+        # Available section — bill-gates should NOT appear here
+        assert "Available from marketplace" in output
+        assert "(8):" in output  # 9 - 1 installed = 8 available
+
+        # All 8 non-installed marketplace brains should be listed
+        for slug in ["elon-musk", "marcus-aurelius", "seneca", "terence-tao",
+                     "albert-einstein", "benjamin-franklin", "virginia-woolf",
+                     "leonardo-da-vinci"]:
+            assert slug in output, f"Missing {slug} from available list"
+
+        # bill-gates should NOT appear in the available list (it IS installed)
+        available_section = output.split("Available from marketplace")[1]
+        assert "bill-gates" not in available_section.split("Install with:")[0]
+
+    def test_brain_list_shows_all_installed_when_all_marketplace_installed(self):
+        """If the user has all 9 marketplace brains, the 'available'
+        section should be empty (or show 'all installed')."""
+        from hermes_cli.brain_cmds import cmd_brain_list
+        import io
+        from contextlib import redirect_stdout
+        from hermes_cli.install_cmd import MARKETPLACE_CATALOG
+
+        installed = [
+            {"name": slug, "source": "marketplace-official", "active": i == 0,
+             "has_token": False}
+            for i, (slug, _, _) in enumerate(MARKETPLACE_CATALOG)
+        ]
+        with patch("brain.paths.list_brains", return_value=installed):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_brain_list()
+            output = buf.getvalue()
+
+        # All marketplace brains installed
+        assert "All 9 marketplace brains installed" in output
+        # The "Available from marketplace (N)" header should NOT appear
+        assert "Available from marketplace (" not in output or "All" in output
 
     def test_cmd_brain_install_delegates_to_install_cmd(self, monkeypatch):
         """cmd_brain_install should delegate to hermes_cli.install_cmd.cmd_install."""

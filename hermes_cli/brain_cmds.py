@@ -9,25 +9,56 @@ from pathlib import Path
 
 
 def cmd_brain_list():
-    """List all installed brains."""
+    """List all brains — installed AND available from the marketplace.
+
+    Installed brains are flagged with their status (active/inactive).
+    Marketplace brains not yet installed are shown with an
+    "available" marker so the user can see what's available without
+    running `beam brain install --list` separately.
+    """
     from brain.paths import list_brains
+    from hermes_cli.install_cmd import MARKETPLACE_CATALOG
 
-    brains = list_brains()
-    if not brains:
-        print("No brains installed.")
-        print("Use 'beam install <slug>' to install a brain from the marketplace.")
-        print("(Or run 'beam install' with no args for the interactive picker.)")
-        return
+    installed = list_brains()
+    installed_names = {b["name"] for b in installed}
 
+    # Active brain (the one currently being used)
+    active_name = next((b["name"] for b in installed if b["active"]), None)
+
+    # ── Section 1: Installed brains ──
     print("Installed brains:\n")
-    for b in brains:
-        active_marker = "●" if b["active"] else "○"
-        source_tag = f"[{b['source']}]"
-        token_tag = " 🔒" if b["has_token"] else ""
-        print(f"  {active_marker} {b['name']:<20} {source_tag:<25}{token_tag}")
+    if installed:
+        for b in installed:
+            if b["name"] == active_name:
+                marker = "● ACTIVE"
+            else:
+                marker = "○ ready  "
+            source_tag = f"[{b['source']}]"
+            token_tag = " 🔒" if b.get("has_token") else ""
+            print(f"  {marker}  {b['name']:<20} {source_tag:<25}{token_tag}")
+    else:
+        print("  (none — use 'beam brain install' to add one)")
 
-    print(f"\nActive: {next((b['name'] for b in brains if b['active']), 'none')}")
-    print("Use 'beam brain install' (no args) to add a marketplace brain.")
+    # ── Section 2: Available from marketplace (not yet installed) ──
+    available = [
+        (slug, name, desc)
+        for slug, name, desc in MARKETPLACE_CATALOG
+        if slug not in installed_names
+    ]
+    if available:
+        print(f"\nAvailable from marketplace ({len(available)}):\n")
+        for slug, name, desc in available:
+            print(f"  · {slug:<20} {name:<18s} — {desc}")
+        print(f"\nInstall with: beam brain install <slug>")
+        print(f"  Or run:     beam brain install   (interactive picker)")
+    else:
+        print(f"\n✓ All {len(MARKETPLACE_CATALOG)} marketplace brains installed.")
+
+    # Active brain summary
+    if active_name:
+        print(f"\nActive: {active_name}")
+    else:
+        print("\nActive: (none — run 'beam brain install' to set one)")
 
 
 def cmd_brain_install(slug: str | None = None, no_activate: bool = False):
