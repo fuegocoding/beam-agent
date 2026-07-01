@@ -113,6 +113,27 @@ matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1"
 wecom = ["defusedxml==0.7.1"]
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
+# Brain platform — local-first port of the cloud beam_mind brain-building
+# infrastructure. Lifted from the cloud, see docs/BEAM_AGENT_PORT_PLAN.md
+# in the beam_mind repo (private) for the audit + chunk plan.
+# - brain-platform-core: schemas, question bank, parsers (no Neo4j/Graphiti)
+# - brain-platform-parsers: docx, pdf parser libs (pure-stdlib parsers
+#   are in brain-platform-core)
+# - brain-platform-graph: Graphiti + neo4j driver (used by Chunks 2+3)
+# - brain-platform: everything for the full local-first brain build
+brain-platform-core = []
+brain-platform-parsers = ["pymupdf==1.26.4", "python-docx==1.2.0"]
+brain-platform-graph = [
+  "graphiti-core==0.28.2",
+  # neo4j Python driver is a transitive of graphiti-core, pinned here for
+  # explicit version control per the dep-pinning policy (AGENTS.md).
+  "neo4j==5.28.2",
+]
+brain-platform = [
+  "hermes-agent[brain-platform-core]",
+  "hermes-agent[brain-platform-parsers]",
+  "hermes-agent[brain-platform-graph]",
+]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
   # so keep it out of the base install for source-build packagers like Homebrew.
@@ -279,7 +300,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "brain_platform", "brain_platform.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
