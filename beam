@@ -57,9 +57,92 @@ def _check_config() -> bool:
 
 
 def _check_brain() -> bool:
-    """Check if brain has been built."""
-    brain_path = Path.home() / ".beam" / "brain" / "default" / "personality_graph.json"
-    return brain_path.exists() and brain_path.stat().st_size > 50
+    """Check if ANY brain is available — either the default offline
+    brain OR an installed marketplace brain.
+
+    Marketplace brains live at ``~/.beam/brains/<name>/`` (any
+    subdirectory with a non-empty ``personality_graph.json`` counts).
+    The default offline brain lives at ``~/.beam/brain/default/``.
+    """
+    # Default offline brain
+    default_brain = Path.home() / ".beam" / "brain" / "default" / "personality_graph.json"
+    if default_brain.exists() and default_brain.stat().st_size > 50:
+        return True
+    # Any installed marketplace brain
+    brains_root = Path.home() / ".beam" / "brains"
+    if brains_root.exists():
+        for brain_dir in brains_root.iterdir():
+            if not brain_dir.is_dir():
+                continue
+            graph = brain_dir / "personality_graph.json"
+            if graph.exists() and graph.stat().st_size > 50:
+                return True
+    return False
+
+
+def _list_installed_brains() -> list:
+    """Return a list of installed marketplace brain names."""
+    brains_root = Path.home() / ".beam" / "brains"
+    if not brains_root.exists():
+        return []
+    out = []
+    for brain_dir in sorted(brains_root.iterdir()):
+        if not brain_dir.is_dir():
+            continue
+        graph = brain_dir / "personality_graph.json"
+        if graph.exists() and graph.stat().st_size > 50:
+            out.append(brain_dir.name)
+    return out
+
+
+def _offer_marketplace_brain() -> bool:
+    """Ask the user if they want to install a marketplace brain instead
+    of running the interview. Returns True if a brain was installed.
+    """
+    print("\n" + "=" * 60)
+    print("  Two ways to get a brain")
+    print("=" * 60)
+    print()
+    print("  1. Build your own (15-25 min interview)")
+    print("       Beam asks you ~19 questions about your personality,")
+    print("       values, work style, etc. and builds a brain from your")
+    print("       answers. Run with: beam interview --adaptive")
+    print()
+    print("  2. Install a pre-built personality (~5 sec download)")
+    print("       Pick from 9 marketplace brains (Bill Gates, Elon Musk,")
+    print("       Marcus Aurelius, etc.). Fully offline after install.")
+    print("       Browse: https://openbeam.me/marketplace")
+    print()
+
+    answer = input("Install a marketplace brain? [Y/n]: ").strip().lower()
+    if answer in ("n", "no"):
+        return False
+
+    # Show a few popular options
+    popular = ["bill-gates", "elon-musk", "marcus-aurelius"]
+    print()
+    print("Popular brains:", ", ".join(popular))
+    print("(or any other slug from https://openbeam.me/marketplace)")
+    slug = input(f"Slug [{popular[0]}]: ").strip() or popular[0]
+
+    # Delegate to cmd_install
+    try:
+        from hermes_cli.install_cmd import cmd_install
+        import argparse
+        args = argparse.Namespace(
+            brain=slug,
+            no_activate=False,
+            list_only=False,
+        )
+        result = cmd_install(args)
+        return result == 0
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        return False
+    except Exception as e:
+        print(f"\nInstall failed: {e}")
+        print(f"Try manually: beam install {slug}")
+        return False
 
 
 def _run_setup():
@@ -227,24 +310,32 @@ def _run_first_time():
     (beam_home / "brain" / "default").mkdir(parents=True, exist_ok=True)
     (beam_home / "memory" / "default").mkdir(parents=True, exist_ok=True)
 
-    # Step 3: Interview (if brain not built)
+    # Step 3: If no brain yet, offer the user a choice between
+    # building their own (interview) or installing a marketplace brain.
+    # Previously this forced the interview, which surprised users
+    # who wanted to use a pre-built personality.
     if not _check_brain():
-        print("Your brain hasn't been built yet.")
-        print("Starting the interview to create your digital clone...\n")
-
-        # Import and run interview directly
-        try:
-            from hermes_cli.main import cmd_interview
-            import argparse
-            args = argparse.Namespace()
-            cmd_interview(args)
-        except KeyboardInterrupt:
-            print("\nInterview interrupted. Run 'beam interview' to continue later.")
-        except Exception as e:
-            print(f"\nInterview error: {e}")
-            print("Run 'beam interview' to try again.")
+        installed = _offer_marketplace_brain()
+        if not installed:
+            print("\nYour brain hasn't been built yet.")
+            print("Starting the interview to create your digital clone...\n")
+            try:
+                from hermes_cli.main import cmd_interview
+                import argparse
+                args = argparse.Namespace()
+                cmd_interview(args)
+            except KeyboardInterrupt:
+                print("\nInterview interrupted. Run 'beam interview' to continue later.")
+            except Exception as e:
+                print(f"\nInterview error: {e}")
+                print("Run 'beam interview' to try again.")
     else:
-        print("Brain found. Launching Beam...\n")
+        installed = _list_installed_brains()
+        if installed:
+            print(f"\nActive brain: {installed[0]} (marketplace). Launching Beam...")
+        else:
+            print("Brain found. Launching Beam...")
+        print()
         _launch_cli()
 
 
