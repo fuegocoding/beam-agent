@@ -465,6 +465,20 @@ def cmd_brain_platform_deepen(args: Any) -> int:
     return 0
 
 
+def _progress_bar(current: int, total: int, width: int = 20) -> str:
+    """Render a simple ASCII progress bar.
+
+    Returns a string like ``[██████████░░░░░░░░░░] 50%``. Used by the
+    adaptive interview to show users how far along they are.
+    """
+    if total <= 0:
+        return ""
+    filled = int(width * current / total)
+    bar = "█" * filled + "░" * (width - filled)
+    pct = int(100 * current / total)
+    return f"[{bar}] {pct}%"
+
+
 def cmd_interview_adaptive(args: Any) -> int:
     """Run the LLM-powered adaptive interview (brain_platform)."""
     user_age = getattr(args, "age", 30) or 30
@@ -486,6 +500,9 @@ def cmd_interview_adaptive(args: Any) -> int:
     print("  - Generate adaptive follow-ups for shallow answers")
     print("  - Pick the next question based on coverage gaps")
     print()
+    print(f"Up to ~{max_questions} core questions. Each may get a follow-up if your")
+    print("answer is brief. Total time: ~15-25 minutes.")
+    print()
 
     llm = LLMAdapter()
     orch = AdaptiveInterviewOrchestrator(
@@ -495,7 +512,9 @@ def cmd_interview_adaptive(args: Any) -> int:
     )
 
     question = orch.start()
-    print(f"Q ({orch.questions_asked[-1][0].dimension}): {question.question}\n")
+    core_q_num = 1
+    print(f"\n{_progress_bar(core_q_num, max_questions)}  Question {core_q_num} of ~{max_questions}")
+    print(f"[{orch.questions_asked[-1][0].dimension}] {question.question}\n")
 
     while question is not None:
         try:
@@ -516,7 +535,7 @@ def cmd_interview_adaptive(args: Any) -> int:
 
         # Handle follow-up
         if result.follow_up:
-            print(f"\n  Follow-up: {result.follow_up}\n")
+            print(f"\n  ↳ Follow-up: {result.follow_up}\n")
             try:
                 follow_up_answer = input("Your answer: ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -524,11 +543,20 @@ def cmd_interview_adaptive(args: Any) -> int:
                 return 0
             if follow_up_answer:
                 result = orch.answer(follow_up_answer)
+            # If the follow-up is still being asked (user gave no answer),
+            # the next_question will be the same core question — don't advance counter
+            if result.next_question and result.next_question.id == question.id:
+                # Still on the same core question
+                print(f"\n{_progress_bar(core_q_num, max_questions)}  Question {core_q_num} of ~{max_questions}")
+                print(f"[{orch.questions_asked[-1][0].dimension}] {result.next_question.question}\n")
+                question = result.next_question
+                continue
 
         if result.is_complete:
-            print("\n✓ Interview complete!")
+            print(f"\n{_progress_bar(core_q_num, max_questions)}  Interview complete!")
             transcript = orch.get_transcript()
-            print(f"  Questions answered: {transcript['turn_count']}")
+            print(f"  Core questions answered: {len(transcript['questions_asked'])}")
+            print(f"  Total turns (with follow-ups): {transcript['turn_count']}")
             coverage = transcript.get("coverage", {})
             if coverage:
                 print(f"  Dimensions covered: {sum(1 for s in coverage.values() if s > 0)}")
@@ -536,8 +564,10 @@ def cmd_interview_adaptive(args: Any) -> int:
 
         question = result.next_question
         if question:
+            core_q_num += 1
             dim = orch.questions_asked[-1][0].dimension
-            print(f"\nQ ({dim}): {question.question}\n")
+            print(f"\n{_progress_bar(core_q_num, max_questions)}  Question {core_q_num} of ~{max_questions}")
+            print(f"[{dim}] {question.question}\n")
 
     return 0
 

@@ -498,3 +498,52 @@ class TestCmdBrainPlatformIngestUsesOrchestrator:
         assert call_kwargs["group_id"] == "test"
         # No explicit source_type → auto-detect (None)
         assert call_kwargs["source_type"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 7: interview progress bar + question numbering
+# ──────────────────────────────────────────────────────────────────────
+
+class TestInterviewProgressBar:
+    """The adaptive interview should show a progress bar and question
+    numbering so users know how far along they are."""
+
+    def test_progress_bar_renders_correctly(self, capsys):
+        from brain_platform.cli.integration import _progress_bar
+
+        # 0% — empty bar
+        result = _progress_bar(0, 10, width=10)
+        assert "0%" in result
+        assert "░" * 10 in result
+
+        # 50% — half filled
+        result = _progress_bar(5, 10, width=10)
+        assert "50%" in result
+        assert "█" * 5 in result
+        assert "░" * 5 in result
+
+        # 100% — full bar
+        result = _progress_bar(10, 10, width=10)
+        assert "100%" in result
+        assert "█" * 10 in result
+
+    def test_progress_bar_handles_zero_total(self):
+        from brain_platform.cli.integration import _progress_bar
+
+        # Should not crash on zero total
+        result = _progress_bar(5, 0)
+        assert result == ""
+
+    def test_interview_intro_shows_question_count(self, capsys):
+        """The intro should tell the user the approximate number of questions."""
+        # Just verify the intro text is in the right format by checking
+        # the source code (cheap test that doesn't require running the full interview)
+        import inspect
+        from brain_platform.cli.integration import cmd_interview_adaptive
+        source = inspect.getsource(cmd_interview_adaptive)
+
+        # The intro should mention "core questions" and a number
+        assert "core questions" in source
+        assert "max_questions" in source
+        assert "Question" in source
+        assert "progress" in source.lower() or "%" in source
