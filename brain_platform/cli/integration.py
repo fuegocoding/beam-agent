@@ -807,8 +807,12 @@ def register_brain_platform_commands(subparsers: Any) -> None:
     """Register brain_platform-specific subcommands on the brain parser.
 
     Called from hermes_cli/main.py's argparse setup. Adds:
+      - brain install           (marketplace brain installer)
       - brain platform-search
       - brain platform-ingest
+      - brain platform-generate
+      - brain platform-export
+      - brain platform-deepen
       - brain setup-neo4j
       - interview --adaptive
 

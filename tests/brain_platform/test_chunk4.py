@@ -1022,3 +1022,53 @@ class TestOfferMarketplaceBrainCatalog:
         }
         assert catalog_slugs == expected
         assert len(catalog_slugs) == 9
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 14: beam brain install (subcommand) — interactive marketplace picker
+# ──────────────────────────────────────────────────────────────────────
+
+class TestBeamBrainInstallSubcommand:
+    """`beam brain install [slug]` should work as a subcommand of
+    `brain`, with an interactive picker when no slug is given.
+    """
+
+    def test_install_subcommand_registered(self):
+        """beam brain --help should show the install subcommand."""
+        import subprocess
+        result = subprocess.run(
+            ["/home/theodore/miniconda3/envs/trading-bot/bin/beam", "brain", "--help"],
+            capture_output=True, text=True, timeout=10,
+            env={"PATH": "/home/theodore/miniconda3/envs/trading-bot/bin:/usr/bin:/bin"},
+        )
+        # The help text should mention install
+        assert "install" in result.stdout.lower()
+        assert "marketplace" in result.stdout.lower()
+
+    def test_install_list_flag(self):
+        """beam brain install --list should show the catalog."""
+        import subprocess
+        result = subprocess.run(
+            ["/home/theodore/miniconda3/envs/trading-bot/bin/beam", "brain", "install", "--list"],
+            capture_output=True, text=True, timeout=10,
+            env={"PATH": "/home/theodore/miniconda3/envs/trading-bot/bin:/usr/bin:/bin"},
+        )
+        # Should show all 9 brains
+        assert "bill-gates" in result.stdout
+        assert "elon-musk" in result.stdout
+        assert "marcus-aurelius" in result.stdout
+        assert "leonardo-da-vinci" in result.stdout
+        assert "openbeam.me/marketplace" in result.stdout
+
+    def test_marketplace_catalog_complete(self):
+        """The local catalog must have all 9 marketplace brains."""
+        from hermes_cli.install_cmd import MARKETPLACE_CATALOG
+
+        slugs = {s for s, _, _ in MARKETPLACE_CATALOG}
+        expected = {
+            "bill-gates", "elon-musk", "marcus-aurelius", "seneca",
+            "terence-tao", "virginia-woolf", "leonardo-da-vinci",
+            "benjamin-franklin", "albert-einstein",
+        }
+        assert slugs == expected
+        assert len(MARKETPLACE_CATALOG) == 9

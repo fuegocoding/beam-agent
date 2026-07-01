@@ -6608,6 +6608,11 @@ def cmd_brain(args):
     if action == "setup-neo4j":
         from brain_platform.cli.integration import cmd_setup_neo4j
         return cmd_setup_neo4j(args)
+    if action == "install":
+        # Delegate to hermes_cli.install_cmd — the marketplace installer
+        # already handles auto-ingest into Neo4j, SOUL.md regen, etc.
+        from hermes_cli.install_cmd import cmd_install as _install
+        return _install(args)
 
     if action == "status":
         try:
@@ -16333,6 +16338,32 @@ Examples:
     ingest_parser.add_argument(
         "--label",
         help="Label for this ingestion (e.g. 'college essay', 'blog post')",
+    )
+
+    # beam brain install [slug] — install a marketplace brain
+    install_parser = brain_subparsers.add_parser(
+        "install",
+        help="Install a brain from the marketplace (no arg = interactive picker)",
+        description=(
+            "Install a pre-built brain from https://openbeam.me/marketplace. "
+            "Run without a slug for an interactive picker, or use --list."
+        ),
+    )
+    install_parser.add_argument(
+        "slug",
+        nargs="?",
+        help="Brain slug (e.g., 'bill-gates' or '@alice/coach'). Omit for interactive picker.",
+    )
+    install_parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="Don't set as active brain after install",
+    )
+    install_parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_only",
+        help="List available marketplace brains and exit",
     )
 
     brain_parser.set_defaults(func=cmd_brain)

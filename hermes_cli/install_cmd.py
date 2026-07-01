@@ -107,6 +107,45 @@ def _download_brain(slug: str, output_path: Path) -> dict:
     return graph_data
 
 
+# The full marketplace catalog. Mirrors openbeam.me/marketplace.
+# Used by `beam install` (no args) for the interactive picker and by
+# `beam install --list` to show what's available.
+MARKETPLACE_CATALOG = [
+    ("bill-gates", "Bill Gates", "technologist, philanthropist (Microsoft)"),
+    ("elon-musk", "Elon Musk", "engineer, entrepreneur (Tesla, SpaceX)"),
+    ("marcus-aurelius", "Marcus Aurelius", "Roman emperor, Stoic philosopher"),
+    ("seneca", "Seneca", "Roman Stoic philosopher, tutor to Nero"),
+    ("terence-tao", "Terence Tao", "Fields Medalist mathematician"),
+    ("albert-einstein", "Albert Einstein", "theoretical physicist"),
+    ("benjamin-franklin", "Benjamin Franklin", "founding father, scientist"),
+    ("virginia-woolf", "Virginia Woolf", "modernist novelist, feminist"),
+    ("leonardo-da-vinci", "Leonardo da Vinci", "Renaissance polymath"),
+]
+
+
+def _print_catalog(installed: set = None) -> None:
+    """Print the marketplace catalog, marking already-installed brains."""
+    installed = installed or set()
+    print("\nMarketplace brains:")
+    for slug, name, desc in MARKETPLACE_CATALOG:
+        marker = "  ✓ INSTALLED" if slug in installed else ""
+        print(f"  {slug:20s} {name:18s} — {desc}{marker}")
+    print(f"\nBrowse: https://openbeam.me/marketplace")
+
+
+def _interactive_pick(installed: set) -> str:
+    """Show catalog + ask the user to pick a slug. Returns the chosen slug."""
+    print()
+    _print_catalog(installed)
+    available = [s for s, _, _ in MARKETPLACE_CATALOG if s not in installed]
+    if not available:
+        print("\nYou already have all marketplace brains installed.")
+        return ""
+    default = available[0]
+    print()
+    return input(f"Slug [{default}]: ").strip() or default
+
+
 def cmd_install(args):
     """Handle 'beam install' command."""
     from brain.paths import (
@@ -120,13 +159,25 @@ def cmd_install(args):
     # Parse arguments
     raw_slug = getattr(args, "slug", None)
     no_activate = getattr(args, "no_activate", False)
+    list_only = getattr(args, "list_only", False)
 
+    # `beam install --list` — just show the catalog
+    if list_only:
+        installed = {b["name"] for b in list_brains()}
+        _print_catalog(installed)
+        return 0
+
+    # `beam install` (no args) — interactive picker
     if not raw_slug:
-        print("Usage: beam install <slug> [--no-activate]", file=sys.stderr)
-        print("\nExamples:")
-        print("  beam install creative-writer          # Official brain")
-        print("  beam install @alice/coach              # Community brain")
-        sys.exit(1)
+        try:
+            installed = {b["name"] for b in list_brains()}
+            raw_slug = _interactive_pick(installed)
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return 1
+        if not raw_slug:
+            # User has all brains, or cancelled
+            return 1
 
     # Parse slug
     display_slug, install_name = _parse_slug(raw_slug)
@@ -146,7 +197,21 @@ def cmd_install(args):
     print(f"Installing brain '{display_slug}'...")
     brain_path = get_brain_path(install_name)
 
-    _download_brain(display_slug, brain_path)
+    try:
+        graph_data = _download_brain(display_slug, brain_path)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        # _download_brain already prints a clear error and exits — but
+        # if anything else goes wrong, surface it here without crashing.
+        print(f"Install failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"Try again, or install manually from https://openbeam.me/marketplace")
+        sys.exit(1)
+
+    # Show what was downloaded
+    size_kb = (brain_path / "personality_graph.json").stat().st_size / 1024
+    node_count = len(graph_data.get("knowledge_graph", {}).get("nodes", []))
+    print(f"  Downloaded: {size_kb:.1f} KB, {node_count} nodes")
 
     # Determine source type
     if raw_slug.startswith("@"):
@@ -204,21 +269,34 @@ def cmd_install(args):
         except Exception as exc:
             print(f"  Warning: Could not regenerate SOUL.md: {exc}", file=sys.stderr)
 
+    return 0
+
 
 def register_install_command(subparsers):
     """Register the 'install' subcommand with argparse."""
     parser = subparsers.add_parser(
         "install",
         help="Install a brain from the Beam marketplace",
-        description="Install pre-built brains from the marketplace.",
+        description=(
+            "Install pre-built brains from the marketplace. "
+            "Run without arguments for an interactive picker, "
+            "or use --list to see available brains."
+        ),
     )
     parser.add_argument(
         "slug",
+        nargs="?",  # optional — interactive picker if omitted
         help="Brain slug (e.g., 'creative-writer' or '@alice/coach')",
     )
     parser.add_argument(
         "--no-activate",
         action="store_true",
         help="Don't set as active brain after install",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_only",
+        help="List available marketplace brains and exit",
     )
     parser.set_defaults(func=cmd_install)
