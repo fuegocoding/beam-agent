@@ -6598,6 +6598,17 @@ def cmd_brain(args):
     """Manage your digital brain."""
     action = getattr(args, "brain_action", None) or getattr(args, "action", "status")
 
+    # Chunk 4: brain_platform-specific subcommands (Neo4j-backed)
+    if action == "platform-search":
+        from brain_platform.cli.integration import cmd_brain_platform_search
+        return cmd_brain_platform_search(args)
+    if action == "platform-ingest":
+        from brain_platform.cli.integration import cmd_brain_platform_ingest
+        return cmd_brain_platform_ingest(args)
+    if action == "setup-neo4j":
+        from brain_platform.cli.integration import cmd_setup_neo4j
+        return cmd_setup_neo4j(args)
+
     if action == "status":
         try:
             import json as _json
@@ -6866,6 +6877,11 @@ Output ONLY valid JSON with this structure:
 
 def cmd_interview(args):
     """Start the adaptive brain-building interview."""
+    # Chunk 4: route --adaptive to brain_platform's LLM-powered path
+    if getattr(args, "adaptive", False):
+        from brain_platform.cli.integration import cmd_interview_adaptive
+        return cmd_interview_adaptive(args)
+
     import sys
     import threading
     import itertools
@@ -16330,6 +16346,17 @@ Examples:
         description="Run a multi-pass personality interview",
     )
     interview_parser.set_defaults(func=cmd_interview)
+
+    # =========================================================================
+    # beam brain_platform commands (Chunk 4 integration)
+    # =========================================================================
+    try:
+        from brain_platform.cli.integration import register_brain_platform_commands
+        register_brain_platform_commands(subparsers)
+    except Exception as _bp_err:
+        # Don't crash CLI registration if brain_platform is partially installed
+        import logging as _logging
+        _logging.getLogger(__name__).debug("brain_platform CLI registration skipped: %s", _bp_err)
 
     # =========================================================================
     # beam install command
