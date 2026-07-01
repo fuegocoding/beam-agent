@@ -58,11 +58,16 @@ class LocalGraphSearcher:
             return []
 
         facts: List[str] = []
+        seen: set[str] = set()
         for edge in results:
             if hasattr(edge, "fact") and edge.fact:
-                facts.append(edge.fact)
+                if edge.fact not in seen:
+                    seen.add(edge.fact)
+                    facts.append(edge.fact)
             elif hasattr(edge, "name") and edge.name:
-                facts.append(edge.name)
+                if edge.name not in seen:
+                    seen.add(edge.name)
+                    facts.append(edge.name)
         return facts
 
 

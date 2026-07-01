@@ -418,3 +418,84 @@ class TestOpenAICompatEnvDerivation:
         # Nothing to derive from — both vars stay unset
         assert os.environ.get("OPENAI_API_KEY") is None
         assert os.environ.get("OPENAI_BASE_URL") is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LocalGraphSearcher — dedup
+# ──────────────────────────────────────────────────────────────────────
+
+class TestLocalGraphSearcherDedup:
+    """The searcher should not return the same fact twice, even if
+    Graphiti returns the same edge via multiple semantic paths."""
+
+    def test_dedups_identical_facts(self):
+        from brain_platform.services.local_graph_searcher import LocalGraphSearcher
+
+        # Graphiti returns the same fact via 3 different paths
+        edge1 = MagicMock()
+        edge1.fact = "THE_USER believes in autonomy"
+        edge1.name = "HOLDS"
+        edge2 = MagicMock()
+        edge2.fact = "THE_USER believes in autonomy"
+        edge2.name = "HOLDS"
+        edge3 = MagicMock()
+        edge3.fact = "THE_USER believes in autonomy"
+        edge3.name = "HOLDS"
+        edge4 = MagicMock()
+        edge4.fact = "THE_USER values honesty"
+        edge4.name = "HOLDS"
+
+        store = MagicMock()
+        store.search.return_value = [edge1, edge2, edge3, edge4]
+        searcher = LocalGraphSearcher(store)
+        facts = searcher.search("anything", group_id="test")
+
+        assert facts == [
+            "THE_USER believes in autonomy",
+            "THE_USER values honesty",
+        ]
+
+    def test_preserves_first_occurrence_order(self):
+        """When the same fact appears multiple times, keep the first one
+        (so the most-relevant result is at the top of the list)."""
+        from brain_platform.services.local_graph_searcher import LocalGraphSearcher
+
+        edge1 = MagicMock()
+        edge1.fact = "high-relevance fact"
+        edge1.name = "HOLDS"
+        edge2 = MagicMock()
+        edge2.fact = "lower-relevance fact"
+        edge2.name = "HOLDS"
+        edge3 = MagicMock()
+        edge3.fact = "high-relevance fact"  # duplicate of #1
+        edge3.name = "HOLDS"
+
+        store = MagicMock()
+        store.search.return_value = [edge1, edge2, edge3]
+        searcher = LocalGraphSearcher(store)
+        facts = searcher.search("q", group_id="test")
+
+        # high-relevance should be first, lower-relevance second
+        assert facts[0] == "high-relevance fact"
+        assert facts[1] == "lower-relevance fact"
+        assert len(facts) == 2
+
+    def test_dedup_across_fact_and_name(self):
+        """If a fact is empty and the name is the same as another edge's
+        fact, the dedup should catch that too."""
+        from brain_platform.services.local_graph_searcher import LocalGraphSearcher
+
+        edge1 = MagicMock()
+        edge1.fact = "THE_USER HOLDS autonomy"
+        edge1.name = "HOLDS"
+        edge2 = MagicMock()
+        edge2.fact = ""  # no fact
+        edge2.name = "THE_USER HOLDS autonomy"  # same string as edge1.fact
+
+        store = MagicMock()
+        store.search.return_value = [edge1, edge2]
+        searcher = LocalGraphSearcher(store)
+        facts = searcher.search("q", group_id="test")
+
+        # Should dedup: edge1's fact wins (it came first and is non-empty)
+        assert facts == ["THE_USER HOLDS autonomy"]
