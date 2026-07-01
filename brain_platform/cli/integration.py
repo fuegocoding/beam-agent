@@ -232,6 +232,220 @@ def cmd_brain_platform_ingest(args: Any) -> int:
     return 0
 
 
+def cmd_brain_platform_generate(args: Any) -> int:
+    """Generate a brain file (JSON) from the Neo4j graph.
+
+    Usage: beam brain platform-generate <output.json> [--group-id ID] [--raw-texts-file FILE]
+    """
+    output_path = getattr(args, "output", None)
+    if not output_path:
+        print("Usage: beam brain platform-generate <output.json>")
+        return 1
+
+    group_id = getattr(args, "group_id", "default_user")
+    raw_texts_file = getattr(args, "raw_texts_file", None)
+
+    raw_texts = None
+    if raw_texts_file:
+        path = Path(raw_texts_file)
+        if not path.exists():
+            print(f"Error: file not found: {raw_texts_file}")
+            return 1
+        raw_texts = [path.read_text()]
+
+    try:
+        from brain_platform.services.local_graph_store import LocalGraphStore
+        from brain_platform.services.llm_adapter import LLMAdapter
+        from brain_platform.pipeline.brain_file.generator import BrainFileGenerator
+
+        store = LocalGraphStore()
+        store.initialize()
+        try:
+            llm = LLMAdapter()
+            generator = BrainFileGenerator(store=store, llm=llm)
+            result = generator.generate_to_file(
+                group_id=group_id,
+                output_path=output_path,
+                raw_texts=raw_texts,
+            )
+        finally:
+            store.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        print("\nIf you haven't set up Neo4j yet, run: beam brain setup-neo4j")
+        return 1
+
+    print(f"\n✓ Brain file generated: {output_path}")
+    print(f"  Size: {result['size_bytes']} bytes")
+    print(f"  Hash: {result['content_hash']}")
+    print(f"  Nodes: {result['node_count']}")
+    print(f"  Edges: {result['edge_count']}")
+    print(f"  Domains: {result['domain_count']}")
+    return 0
+
+
+def cmd_brain_platform_export(args: Any) -> int:
+    """Generate a brain file and export to claude/jsonld/obsidian format.
+
+    Usage: beam brain platform-export <output> --format <format>
+    """
+    output_path = getattr(args, "output", None)
+    if not output_path:
+        print("Usage: beam brain platform-export <output> --format <format>")
+        return 1
+
+    fmt = getattr(args, "format", "jsonld")
+    group_id = getattr(args, "group_id", "default_user")
+
+    try:
+        from brain_platform.services.local_graph_store import LocalGraphStore
+        from brain_platform.services.llm_adapter import LLMAdapter
+        from brain_platform.pipeline.brain_file.generator import BrainFileGenerator
+        from brain_platform.pipeline.brain_file.exporters import (
+            export_claude, export_jsonld, export_obsidian,
+        )
+
+        store = LocalGraphStore()
+        store.initialize()
+        try:
+            llm = LLMAdapter()
+            generator = BrainFileGenerator(store=store, llm=llm)
+            brain_file = generator.generate(group_id=group_id)
+        finally:
+            store.close()
+
+        # Export
+        if fmt == "claude":
+            exported = export_claude(brain_file)
+            import json as _json
+            with open(output_path, "w") as f:
+                _json.dump(exported, f, indent=2)
+            print(f"\n✓ Exported as Claude Projects format: {output_path}")
+            print(f"  system_prompt: {len(exported.get('system_prompt', ''))} chars")
+            print(f"  knowledge_files: {len(exported.get('knowledge_files', []))} files")
+        elif fmt == "jsonld":
+            exported = export_jsonld(brain_file)
+            with open(output_path, "wb") as f:
+                f.write(exported)
+            print(f"\n✓ Exported as JSON-LD: {output_path} ({len(exported)} bytes)")
+        elif fmt == "obsidian":
+            exported = export_obsidian(brain_file)
+            with open(output_path, "wb") as f:
+                f.write(exported)
+            print(f"\n✓ Exported as Obsidian vault: {output_path} ({len(exported)} bytes)")
+    except Exception as e:
+        print(f"Error: {e}")
+        print("\nIf you haven't set up Neo4j yet, run: beam brain setup-neo4j")
+        return 1
+
+    return 0
+
+
+def cmd_brain_platform_deepen(args: Any) -> int:
+    """Analyze brain gaps and generate probe questions.
+
+    Usage: beam brain platform-deepen [--group-id ID] [--covered-questions FILE]
+
+    Reads the latest extracted graph from Neo4j, analyzes dimension
+    coverage, and asks the LLM to generate targeted probe questions
+    for the thin dimensions.
+    """
+    group_id = getattr(args, "group_id", "default_user")
+    covered_questions_file = getattr(args, "covered_questions", None)
+
+    covered_questions = []
+    if covered_questions_file:
+        path = Path(covered_questions_file)
+        if path.exists():
+            covered_questions = [
+                line.strip() for line in path.read_text().splitlines()
+                if line.strip()
+            ]
+
+    try:
+        from brain_platform.services.local_graph_store import LocalGraphStore
+        from brain_platform.services.llm_adapter import LLMAdapter
+        from brain_platform.pipeline.brain_file.graph_reader import GraphReader
+        from brain_platform.pipeline.interview.deepen import (
+            analyze_brain_gaps,
+            generate_probe_questions,
+        )
+        from brain_platform.pipeline.brain_schema import PersonalityGraph
+
+        store = LocalGraphStore()
+        store.initialize()
+        try:
+            client = store.client
+            # Read the typed graph nodes and build a minimal PersonalityGraph
+            # for the gap analysis (uses node_summaries + typed_nodes).
+            reader = GraphReader(store)
+            graph_data = reader.read_all(group_id)
+        finally:
+            store.close()
+
+        # Build a minimal PersonalityGraph from the typed nodes
+        typed_nodes = graph_data.nodes
+        # We can't reconstruct the full PersonalityGraph from graph
+        # reader output (it only gives labels + summaries). Use the
+        # node counts per label as a proxy.
+        from collections import Counter
+        label_counts = Counter(n.type for n in typed_nodes)
+
+        # Build a PersonalityGraph stub for analyze_brain_gaps
+        from brain_platform.pipeline.brain_schema import (
+            TraitNode, BeliefNode, ValueNode, BoundaryNode,
+            LifeEventNode, MemoryNode, PatternNode, SocialNode,
+            ExpertiseNode, StyleNode, PersonNode,
+        )
+
+        def _mk_stub(cls, count):
+            return [cls(name=f"placeholder_{i}", summary="") for i in range(count)]
+
+        graph = PersonalityGraph(
+            user_summary="",
+            traits=_mk_stub(TraitNode, label_counts.get("PersonalityTrait", 0)),
+            beliefs=_mk_stub(BeliefNode, label_counts.get("Belief", 0)),
+            values=_mk_stub(ValueNode, label_counts.get("Value", 0)),
+            boundaries=_mk_stub(BoundaryNode, label_counts.get("Boundary", 0)),
+            life_events=_mk_stub(LifeEventNode, label_counts.get("LifeEvent", 0)),
+            memories=_mk_stub(MemoryNode, label_counts.get("EpisodicMemory", 0)),
+            patterns=_mk_stub(PatternNode, label_counts.get("CognitivePattern", 0)),
+            social=_mk_stub(SocialNode, label_counts.get("SocialPattern", 0)),
+            expertise=_mk_stub(ExpertiseNode, label_counts.get("KnowledgeDomain", 0)),
+            style=_mk_stub(StyleNode, label_counts.get("StyleProfile", 0)),
+            people=_mk_stub(PersonNode, label_counts.get("Person", 0)),
+        )
+
+        result = analyze_brain_gaps(graph)
+
+        # Generate probe questions if there are gaps
+        if result.gaps:
+            llm = LLMAdapter()
+            probes = generate_probe_questions(
+                gaps=result.gaps,
+                graph=graph,
+                covered_questions=covered_questions,
+                llm_client=llm,
+            )
+            result.probe_questions = probes
+    except Exception as e:
+        print(f"Error: {e}")
+        print("\nIf you haven't set up Neo4j yet, run: beam brain setup-neo4j")
+        return 1
+
+    print(f"\n{result.summary}\n")
+    if result.gaps:
+        print(f"Gaps ({len(result.gaps)}):")
+        for g in result.gaps[:10]:
+            print(f"  - {g.dimension}: {g.current_count}/{g.target_count} (gap: {g.gap})")
+    if result.probe_questions:
+        print(f"\nProbe questions ({len(result.probe_questions)}):")
+        for q in result.probe_questions[:5]:
+            print(f"  [{q.dimension}] {q.question}")
+            print(f"    Why: {q.why}")
+    return 0
+
+
 def cmd_interview_adaptive(args: Any) -> int:
     """Run the LLM-powered adaptive interview (brain_platform)."""
     user_age = getattr(args, "age", 30) or 30
@@ -351,6 +565,39 @@ def register_brain_platform_commands(subparsers: Any) -> None:
             p.add_argument("file", help="Path to .txt/.md file to ingest")
             p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
             p.set_defaults(func=cmd_brain_platform_ingest)
+
+            # beam brain platform-generate — assemble the brain file
+            p = brain_subs_action.add_parser(
+                "platform-generate",
+                help="Generate the brain file (JSON) from Neo4j (brain_platform)",
+                description="Assemble a BrainFileSchema from the Neo4j graph and write to disk",
+            )
+            p.add_argument("output", help="Path to write the brain file (.json)")
+            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--raw-texts-file", help="Optional .txt file of raw texts for style analysis")
+            p.set_defaults(func=cmd_brain_platform_generate)
+
+            # beam brain platform-export — generate + export to format
+            p = brain_subs_action.add_parser(
+                "platform-export",
+                help="Generate + export the brain file (claude/jsonld/obsidian)",
+                description="Generate a brain file and export it in the chosen format",
+            )
+            p.add_argument("output", help="Path to write the export")
+            p.add_argument("--format", choices=["claude", "jsonld", "obsidian"], default="jsonld",
+                          help="Export format (default: jsonld)")
+            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.set_defaults(func=cmd_brain_platform_export)
+
+            # beam brain platform-deepen — analyze gaps + generate probes
+            p = brain_subs_action.add_parser(
+                "platform-deepen",
+                help="Analyze brain gaps and generate probe questions",
+                description="Find thin dimensions and ask the LLM for probe questions to fill them",
+            )
+            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--covered-questions", help="Optional .txt file of already-asked question IDs")
+            p.set_defaults(func=cmd_brain_platform_deepen)
 
             # beam brain setup-neo4j
             p = brain_subs_action.add_parser(
