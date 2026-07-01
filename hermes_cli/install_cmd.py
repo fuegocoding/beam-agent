@@ -77,12 +77,99 @@ def _parse_slug(raw_slug: str) -> tuple[str, str]:
         return raw_slug, raw_slug
 
 
-def _download_brain(slug: str, output_path: Path) -> dict:
-    """Install a brain from the marketplace.
+def _is_local_file(slug: str) -> bool:
+    """True if ``slug`` is a path to an existing local file.
 
-    Downloads the full personality_graph.json via the public download
-    endpoint. No auth required — all marketplace brains are free.
+    Used by cmd_install to detect when the user is installing a brain
+    they downloaded (e.g. from GitHub) rather than fetching from the
+    marketplace. Supports absolute paths, ~/ expansion, and relative
+    paths. Only counts as a local file if the file actually exists —
+    a typo in a slug like ``bill-gattes`` won't be mistaken for a file.
     """
+    if not slug:
+        return False
+    if slug.startswith("@") or slug.startswith("http://") or slug.startswith("https://"):
+        return False
+    try:
+        p = Path(slug).expanduser()
+        return p.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _install_name_from_file(path: Path) -> str:
+    """Derive a sensible brain install name from a file path.
+
+    ``/Users/alice/Downloads/bill.json`` -> ``bill``
+    ``/tmp/some-brain-v2.jsonld`` -> ``some-brain-v2``
+    """
+    stem = path.stem
+    # Strip common suffixes that aren't part of the name
+    for suffix in (".brain", ""):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)] if suffix else stem
+    return stem or "brain"
+
+
+def _read_brain_file(path: Path) -> dict:
+    """Read a brain file from disk and validate it's a BrainFile.
+
+    Raises ValueError with a clear message if the file is malformed
+    or not a valid BrainFile (wrong schema_version, missing required
+    fields, etc.).
+    """
+    from brain_platform.pipeline.brain_file.schema import BrainFileSchema
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"File is not valid JSON: {e}")
+
+    # Pydantic v2 validates on instantiation; this gives a clear
+    # error message with the specific field that failed.
+    try:
+        BrainFileSchema.model_validate(data)
+    except Exception as e:
+        # Include a short summary of the file so the user can verify
+        # they're pointing at the right thing.
+        top_keys = list(data.keys())[:5] if isinstance(data, dict) else []
+        raise ValueError(
+            f"File is not a valid BrainFile (top-level keys: {top_keys}). "
+            f"Expected a BrainFileSchema v2.2.0 JSON. Validation error: {e}"
+        )
+
+    return data
+
+
+def _download_brain(slug: str, output_path: Path) -> dict:
+    """Install a brain from the marketplace OR from a local file.
+
+    Two modes:
+    - Local file (slug is a path to an existing .json): reads from
+      disk and validates against BrainFileSchema.
+    - Marketplace slug (default): downloads from the marketplace API.
+
+    Both modes produce the same on-disk format: personality_graph.json
+    in the brain's directory.
+    """
+    if _is_local_file(slug):
+        # Local file install — someone downloaded a brain from GitHub
+        # or a personal site and wants to install it. Validate the
+        # format before writing to disk.
+        source_path = Path(slug).expanduser().resolve()
+        try:
+            graph_data = _read_brain_file(source_path)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            print(f"  (file: {source_path})", file=sys.stderr)
+            sys.exit(1)
+        output_path.mkdir(parents=True, exist_ok=True)
+        graph_path = output_path / "personality_graph.json"
+        graph_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
+        return graph_data
+
+    # Marketplace install — fetch from the API.
     api_url = _get_api_url()
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -179,8 +266,17 @@ def cmd_install(args):
             # User has all brains, or cancelled
             return 1
 
-    # Parse slug
-    display_slug, install_name = _parse_slug(raw_slug)
+    # Parse slug OR detect local file. A local file path takes
+    # precedence over the slug parser (so /Users/.../bill.json
+    # doesn't get mangled by the @-community parser).
+    if _is_local_file(raw_slug):
+        source_path = Path(raw_slug).expanduser().resolve()
+        display_slug = f"file:{source_path.name}"
+        install_name = _install_name_from_file(source_path)
+        print(f"Installing brain from local file: {source_path}")
+    else:
+        display_slug, install_name = _parse_slug(raw_slug)
+        print(f"Installing brain '{display_slug}'...")
 
     # Check if already installed
     brains = list_brains()
@@ -193,12 +289,13 @@ def cmd_install(args):
     # Ensure directories exist
     ensure_beam_dirs()
 
-    # Download
-    print(f"Installing brain '{display_slug}'...")
+    # Download (or copy from local file). _download_brain needs the
+    # original input (raw_slug) so it can detect the local-file path
+    # itself — display_slug is just a label like "file:brain.json".
     brain_path = get_brain_path(install_name)
 
     try:
-        graph_data = _download_brain(display_slug, brain_path)
+        graph_data = _download_brain(raw_slug, brain_path)
     except SystemExit:
         raise
     except Exception as exc:

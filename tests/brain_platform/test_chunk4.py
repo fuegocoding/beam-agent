@@ -1257,3 +1257,152 @@ class TestBrainInstallSlashCommand:
         brain_cmds.cmd_brain_install(None)
         # Slug is None → install_cmd will show the picker
         assert delegate_calls[0].brain is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 16: beam install from a local file (no marketplace needed)
+# ──────────────────────────────────────────────────────────────────────
+
+class TestBeamInstallFromLocalFile:
+    """The self-publish flow: user exports their brain, uploads it
+    somewhere (e.g. GitHub), someone downloads it, then runs
+    `beam install /path/to/file.json` to install it locally.
+
+    No marketplace API call, no URL parsing — just a file copy
+    with format validation.
+    """
+
+    def test_is_local_file_detects_existing_json(self, tmp_path):
+        from hermes_cli.install_cmd import _is_local_file
+        f = tmp_path / "bill.json"
+        f.write_text("{}")
+        assert _is_local_file(str(f)) is True
+
+    def test_is_local_file_detects_existing_jsonld(self, tmp_path):
+        from hermes_cli.install_cmd import _is_local_file
+        f = tmp_path / "bill.jsonld"
+        f.write_text("{}")
+        assert _is_local_file(str(f)) is True
+
+    def test_is_local_file_expands_tilde(self, tmp_path, monkeypatch):
+        """~/Downloads/brain.json should work even if the path doesn't
+        literally start with /."""
+        from hermes_cli.install_cmd import _is_local_file
+        f = tmp_path / "brain.json"
+        f.write_text("{}")
+        # Use a home-like path
+        fake_home = tmp_path
+        monkeypatch.setenv("HOME", str(fake_home))
+        assert _is_local_file("~/brain.json") is True
+
+    def test_is_local_file_rejects_nonexistent(self):
+        from hermes_cli.install_cmd import _is_local_file
+        assert _is_local_file("/nonexistent/path/brain.json") is False
+
+    def test_is_local_file_rejects_community_syntax(self):
+        """@user/slug is NOT a local file even if a file with that
+        name happened to exist on disk."""
+        from hermes_cli.install_cmd import _is_local_file
+        assert _is_local_file("@alice/coach") is False
+
+    def test_is_local_file_rejects_empty_string(self):
+        from hermes_cli.install_cmd import _is_local_file
+        assert _is_local_file("") is False
+        assert _is_local_file(None) is False
+
+    def test_install_name_from_file_strips_extension(self):
+        from hermes_cli.install_cmd import _install_name_from_file
+        from pathlib import Path
+        # .json and .jsonld extensions are stripped
+        assert _install_name_from_file(Path("/tmp/bill.json")) == "bill"
+        assert _install_name_from_file(Path("/tmp/my-brain-v2.jsonld")) == "my-brain-v2"
+        # The .brain marker suffix is also stripped (it's a common
+        # naming convention for brain files: "alice.brain.json")
+        assert _install_name_from_file(Path("/tmp/alice.brain.json")) == "alice"
+
+    def test_read_brain_file_validates_schema(self, tmp_path):
+        """A malformed file should be rejected with a clear error."""
+        from hermes_cli.install_cmd import _read_brain_file
+        import pytest
+
+        bad = tmp_path / "bad.json"
+        bad.write_text('{"metadata": {}}')  # missing required fields
+        with pytest.raises(ValueError, match="not a valid BrainFile"):
+            _read_brain_file(bad)
+
+    def test_read_brain_file_rejects_invalid_json(self, tmp_path):
+        from hermes_cli.install_cmd import _read_brain_file
+        import pytest
+
+        bad = tmp_path / "broken.json"
+        bad.write_text("not json at all")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            _read_brain_file(bad)
+
+    def test_cmd_install_from_local_file(self, tmp_path, monkeypatch):
+        """End-to-end: export a brain, then install it from the file."""
+        from hermes_cli.install_cmd import cmd_install, _is_local_file
+        from brain_platform.pipeline.brain_file.schema import (
+            BrainFileSchema, BrainFileMetadata, PersonalityProfile, WritingStyle,
+        )
+        from datetime import datetime, timezone
+        import argparse
+        import json
+
+        # Step 1: write a valid BrainFile (using the schema's defaults
+        # for optional fields — no need to mock the generator).
+        brain_file = BrainFileSchema(
+            metadata=BrainFileMetadata(
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+                user_id="test-user",
+                source_count=1,
+                graphiti_group_id="test-group",
+            ),
+            personality_profile=PersonalityProfile(),
+            writing_style=WritingStyle(),
+        )
+        export_path = tmp_path / "shared-brain.json"
+        export_path.write_text(json.dumps(brain_file.to_jsonld(), indent=2))
+        assert export_path.exists(), f"Export file wasn't written: {export_path}"
+        assert _is_local_file(str(export_path)), f"_is_local_file returned False for {export_path}"
+
+        # Step 2: install from that file. Patch brain.paths because
+        # cmd_install does the imports inside the function.
+        monkeypatch.setattr(
+            "brain.paths.get_brain_path",
+            lambda name: tmp_path / "brains" / name,
+        )
+        monkeypatch.setattr(
+            "brain.paths.list_brains", lambda: []
+        )
+        monkeypatch.setattr(
+            "brain.paths.register_brain", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "brain.paths.set_active_brain", lambda name: None
+        )
+        monkeypatch.setattr(
+            "brain.paths.ensure_beam_dirs", lambda: None
+        )
+        # Don't actually call _ingest_brain_file_json (would need Neo4j)
+        monkeypatch.setattr(
+            "brain_platform.cli.integration._ingest_brain_file_json",
+            lambda *a, **k: {"nodes_created": 0, "edges_created": 0},
+        )
+
+        args = argparse.Namespace(
+            slug=str(export_path),
+            no_activate=False,
+            list_only=False,
+        )
+        result = cmd_install(args)
+        assert result == 0
+
+        # The brain should now be installed
+        installed_path = tmp_path / "brains" / "shared-brain" / "personality_graph.json"
+        assert installed_path.exists()
+        # The content should match the exported file
+        installed_data = json.loads(installed_path.read_text())
+        assert "metadata" in installed_data
+        assert installed_data["metadata"]["schema_version"] == "2.2.0"
