@@ -107,7 +107,7 @@ Switching regenerates `~/.hermes/SOUL.md` and invalidates the agent's cached sys
 | `virginia-woolf` | Virginia Woolf | creative | Modernist novelist and feminist pioneer — consciousness, memory, and a room of one's own |
 | `leonardo-da-vinci` | Leonardo da Vinci | creative | Renaissance polymath — painter, engineer, anatomist, and student of nature |
 
-All marketplace brains are free. Source: [`api.openbeam.me`](https://api.openbeam.me). Override with `BEAM_API_URL=<your-mirror>` for self-hosted catalogs.
+All marketplace brains are free. Browse the catalog at [openbeam.me/marketplace](https://openbeam.me/marketplace). Override the API endpoint with `BEAM_API_URL=<your-mirror>` for self-hosted catalogs.
 
 ### Build Your Own Brain
 
