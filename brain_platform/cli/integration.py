@@ -143,10 +143,28 @@ def cmd_setup_neo4j(args: Any) -> int:
     return 0
 
 
-def cmd_brain_platform_search(args: Any) -> int:
-    """Search the Neo4j-backed personality graph for relevant facts.
+def _get_default_group_id() -> str:
+    """Return the active brain name as the default group_id.
 
-    Usage: beam brain platform-search <query> [--num-results N]
+    The Neo4j group_id is per-user (or per-brain), so searching without
+    specifying a group_id should default to whatever brain the user
+    currently has active. This way ``beam brain platform-search`` just
+    works for whatever the user is currently using.
+    """
+    try:
+        from brain.paths import get_active_brain_name
+        return get_active_brain_name()
+    except Exception:
+        return "default_user"
+
+
+def cmd_brain_platform_search(args: Any) -> int:
+    """Search the Neo4j-backed graph for relevant facts.
+
+    Usage: beam brain platform-search <query> [--num-results N] [--group-id ID]
+
+    Defaults to searching the active brain's graph. Use --group-id to
+    search a different Neo4j partition.
     """
     query = getattr(args, "query", None)
     if not query:
@@ -154,7 +172,12 @@ def cmd_brain_platform_search(args: Any) -> int:
         return 1
 
     num_results = getattr(args, "num_results", 5)
-    group_id = getattr(args, "group_id", "default_user")
+    # Default to the active brain's group_id so the command "just works"
+    # against whatever brain the user is currently using.
+    if hasattr(args, "group_id") and args.group_id != "default_user":
+        group_id = args.group_id
+    else:
+        group_id = _get_default_group_id()
 
     try:
         from brain_platform.services.local_graph_store import LocalGraphStore
@@ -173,10 +196,26 @@ def cmd_brain_platform_search(args: Any) -> int:
         return 1
 
     if not facts:
-        print(f"No facts found for query: {query!r}")
+        print(f"No facts found for query: {query!r} (group_id={group_id!r})")
+        print()
+        print("This usually means the graph has no data for this group yet.")
+        print("The marketplace brain is stored as a JSON file at:")
+        try:
+            from brain.paths import get_active_brain_graph_path
+            path = get_active_brain_graph_path()
+            if path.exists():
+                print(f"  {path}")
+        except Exception:
+            pass
+        print()
+        print("To search the active brain via Neo4j, first ingest it:")
+        print(f"  beam brain platform-ingest {path if path.exists() else '<brain.json>'}")
+        print()
+        print("Or run a new interview to build the graph:")
+        print("  beam interview --adaptive")
         return 0
 
-    print(f"\nFound {len(facts)} fact(s) for query: {query!r}\n")
+    print(f"\nFound {len(facts)} fact(s) for query: {query!r} (group_id={group_id!r})\n")
     for i, fact in enumerate(facts, 1):
         print(f"  {i}. {fact}")
     return 0
@@ -203,7 +242,9 @@ def cmd_brain_platform_ingest(args: Any) -> int:
         print(f"Error: file not found: {file_path}")
         return 1
 
-    group_id = getattr(args, "group_id", "default_user")
+    # Default to the active brain's group_id so the command just works
+    # against whatever brain the user is currently using.
+    group_id = getattr(args, "group_id", None) or _get_default_group_id()
     explicit_type = getattr(args, "type", None)
 
     source_type = None
@@ -261,7 +302,9 @@ def cmd_brain_platform_generate(args: Any) -> int:
         print("Usage: beam brain platform-generate <output.json>")
         return 1
 
-    group_id = getattr(args, "group_id", "default_user")
+    # Default to the active brain's group_id so the command just works
+    # against whatever brain the user is currently using.
+    group_id = getattr(args, "group_id", None) or _get_default_group_id()
     raw_texts_file = getattr(args, "raw_texts_file", None)
 
     raw_texts = None
@@ -314,7 +357,9 @@ def cmd_brain_platform_export(args: Any) -> int:
         return 1
 
     fmt = getattr(args, "format", "jsonld")
-    group_id = getattr(args, "group_id", "default_user")
+    # Default to the active brain's group_id so the command just works
+    # against whatever brain the user is currently using.
+    group_id = getattr(args, "group_id", None) or _get_default_group_id()
 
     try:
         from brain_platform.services.local_graph_store import LocalGraphStore
@@ -369,7 +414,9 @@ def cmd_brain_platform_deepen(args: Any) -> int:
     coverage, and asks the LLM to generate targeted probe questions
     for the thin dimensions.
     """
-    group_id = getattr(args, "group_id", "default_user")
+    # Default to the active brain's group_id so the command just works
+    # against whatever brain the user is currently using.
+    group_id = getattr(args, "group_id", None) or _get_default_group_id()
     covered_questions_file = getattr(args, "covered_questions", None)
 
     covered_questions = []

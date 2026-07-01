@@ -547,3 +547,55 @@ class TestInterviewProgressBar:
         assert "max_questions" in source
         assert "Question" in source
         assert "progress" in source.lower() or "%" in source
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 8: default group_id should match the active brain
+# ──────────────────────────────────────────────────────────────────────
+
+class TestDefaultGroupIdFromActiveBrain:
+    """platform-search / platform-ingest / platform-deepen should
+    default to the active brain's group_id so users don't have to
+    pass --group-id every time."""
+
+    def test_get_default_group_id_returns_active_brain(self, monkeypatch):
+        from brain_platform.cli.integration import _get_default_group_id
+
+        # Mock the active brain name
+        import brain.paths
+        monkeypatch.setattr(brain.paths, "get_active_brain_name", lambda: "bill-gates")
+
+        assert _get_default_group_id() == "bill-gates"
+
+    def test_falls_back_to_default_user_on_error(self, monkeypatch):
+        """If get_active_brain_name raises (no config, etc.), fall back."""
+        from brain_platform.cli.integration import _get_default_group_id
+
+        import brain.paths
+        def boom():
+            raise RuntimeError("no config")
+        monkeypatch.setattr(brain.paths, "get_active_brain_name", boom)
+
+        assert _get_default_group_id() == "default_user"
+
+    def test_search_uses_active_brain_by_default(self, capsys, monkeypatch):
+        """beam brain platform-search should use the active brain's group_id."""
+        from brain_platform.cli.integration import cmd_brain_platform_search
+
+        import brain.paths
+        monkeypatch.setattr(brain.paths, "get_active_brain_name", lambda: "bill-gates")
+
+        # Mock the searcher so we don't need a real Neo4j
+        with patch("brain_platform.services.local_graph_store.LocalGraphStore") as MockStore:
+            store_instance = MagicMock()
+            store_instance.search.return_value = []
+            MockStore.return_value = store_instance
+
+            args = MagicMock(query="microsoft", num_results=5, group_id="default_user")
+            result = cmd_brain_platform_search(args)
+
+        # The search should have used "bill-gates" as the group_id
+        # (from get_active_brain_name), not "default_user"
+        store_instance.search.assert_called_once()
+        call_kwargs = store_instance.search.call_args.kwargs
+        assert call_kwargs["group_id"] == "bill-gates"
