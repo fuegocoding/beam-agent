@@ -223,9 +223,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 
     # --- Beam brain commands ---
-    CommandDef("brain", "Manage your digital brain (status, export)", "Tools & Skills",
-               subcommands=("status", "export", "list", "switch", "info", "remove", "update"),
-               args_hint="[status|export|list|switch|info|remove|update]"),
+    CommandDef("brain", "Manage your digital brain (status, list, switch, install, etc.)", "Tools & Skills",
+               subcommands=("status", "export", "list", "switch", "info", "remove", "update", "install"),
+               args_hint="[status|export|list|switch|info|remove|update|install]"),
     CommandDef("interview", "Start adaptive interview to build your digital brain", "Tools & Skills"),
 ]
 

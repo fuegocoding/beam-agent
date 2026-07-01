@@ -1072,3 +1072,127 @@ class TestBeamBrainInstallSubcommand:
         }
         assert slugs == expected
         assert len(MARKETPLACE_CATALOG) == 9
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 15: /brain install (slash command) — full integration
+# ──────────────────────────────────────────────────────────────────────
+
+class TestBrainInstallSlashCommand:
+    """`/brain install` (and `beam brain install`) should work as a
+    slash command, delegate to install_cmd, and register in the
+    command registry.
+    """
+
+    def test_install_in_subcommand_list(self):
+        """The register_brain_subcommands helper should include 'install'."""
+        from hermes_cli.brain_cmds import register_brain_subcommands
+        subs = register_brain_subcommands()
+        assert "install" in subs
+        assert "list" in subs
+        assert "switch" in subs
+
+    def test_brain_command_registry_includes_install(self):
+        """The /brain slash command should advertise install as a subcommand."""
+        from hermes_cli.commands import COMMAND_REGISTRY
+        # Find the brain command
+        brain_cmd = next(
+            (c for c in COMMAND_REGISTRY if c.name == "brain"),
+            None,
+        )
+        assert brain_cmd is not None
+        assert "install" in brain_cmd.subcommands
+        # Description should mention install
+        assert "install" in brain_cmd.description.lower() or "install" in brain_cmd.args_hint
+
+    def test_brain_list_prompts_install(self):
+        """When /brain list shows 0 brains, suggest 'beam brain install'."""
+        from hermes_cli.brain_cmds import cmd_brain_list
+        import io
+        from contextlib import redirect_stdout
+
+        # Mock list_brains to return empty
+        with patch("brain.paths.list_brains", return_value=[]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_brain_list()
+            output = buf.getvalue()
+            assert "No brains installed" in output
+            assert "beam install" in output
+            assert "interactive picker" in output
+
+    def test_brain_list_prompts_install_when_brains_exist(self):
+        """When /brain list shows existing brains, also suggest install."""
+        from hermes_cli.brain_cmds import cmd_brain_list
+        import io
+        from contextlib import redirect_stdout
+
+        with patch("brain.paths.list_brains", return_value=[
+            {"name": "bill-gates", "source": "marketplace-official", "active": True, "has_token": False},
+        ]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_brain_list()
+            output = buf.getvalue()
+            assert "bill-gates" in output
+            assert "beam brain install" in output
+
+    def test_cmd_brain_install_delegates_to_install_cmd(self, monkeypatch):
+        """cmd_brain_install should delegate to hermes_cli.install_cmd.cmd_install."""
+        from hermes_cli import brain_cmds
+        import argparse
+
+        delegate_calls = []
+        def mock_cmd_install(args):
+            delegate_calls.append(args)
+            return 0
+        monkeypatch.setattr(
+            "hermes_cli.install_cmd.cmd_install",
+            mock_cmd_install,
+        )
+
+        args = argparse.Namespace(
+            brain="test-slug",
+            no_activate=False,
+            list_only=False,
+        )
+        result = brain_cmds.cmd_brain_install("test-slug")
+        assert result == 0
+        assert len(delegate_calls) == 1
+        assert delegate_calls[0].brain == "test-slug"
+        assert delegate_calls[0].no_activate is False
+
+    def test_cmd_brain_install_passes_no_activate(self, monkeypatch):
+        """The --no-activate flag should be forwarded."""
+        from hermes_cli import brain_cmds
+        import argparse
+
+        delegate_calls = []
+        def mock_cmd_install(args):
+            delegate_calls.append(args)
+            return 0
+        monkeypatch.setattr(
+            "hermes_cli.install_cmd.cmd_install",
+            mock_cmd_install,
+        )
+
+        brain_cmds.cmd_brain_install("test-slug", no_activate=True)
+        assert delegate_calls[0].no_activate is True
+
+    def test_cmd_brain_install_no_slug_triggers_picker(self, monkeypatch):
+        """No slug → install_cmd shows the interactive picker."""
+        from hermes_cli import brain_cmds
+        import argparse
+
+        delegate_calls = []
+        def mock_cmd_install(args):
+            delegate_calls.append(args)
+            return 0
+        monkeypatch.setattr(
+            "hermes_cli.install_cmd.cmd_install",
+            mock_cmd_install,
+        )
+
+        brain_cmds.cmd_brain_install(None)
+        # Slug is None → install_cmd will show the picker
+        assert delegate_calls[0].brain is None

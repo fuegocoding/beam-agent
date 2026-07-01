@@ -1,6 +1,6 @@
 """Multi-brain management commands for the CLI.
 
-Adds: /brain list, /brain switch, /brain info, /brain remove
+Adds: /brain list, /brain switch, /brain info, /brain remove, /brain install
 """
 import json
 import shutil
@@ -16,6 +16,7 @@ def cmd_brain_list():
     if not brains:
         print("No brains installed.")
         print("Use 'beam install <slug>' to install a brain from the marketplace.")
+        print("(Or run 'beam install' with no args for the interactive picker.)")
         return
 
     print("Installed brains:\n")
@@ -26,6 +27,28 @@ def cmd_brain_list():
         print(f"  {active_marker} {b['name']:<20} {source_tag:<25}{token_tag}")
 
     print(f"\nActive: {next((b['name'] for b in brains if b['active']), 'none')}")
+    print("Use 'beam brain install' (no args) to add a marketplace brain.")
+
+
+def cmd_brain_install(slug: str | None = None, no_activate: bool = False):
+    """Install a marketplace brain.
+
+    Delegates to ``hermes_cli.install_cmd.cmd_install`` which handles
+    the full download + register + auto-ingest-into-Neo4j +
+    regenerate-SOUL.md flow.
+
+    With no slug, ``cmd_install`` shows the interactive catalog picker
+    (recommended default = first un-installed brain).
+    """
+    import argparse
+    from hermes_cli.install_cmd import cmd_install as _install
+
+    args = argparse.Namespace(
+        brain=slug,
+        no_activate=no_activate,
+        list_only=False,
+    )
+    return _install(args)
 
 
 def cmd_brain_switch(name: str):
@@ -262,4 +285,4 @@ def _regenerate_soul(brain_name: str):
 
 def register_brain_subcommands(existing_subcommands: list[str] | None = None):
     """Return additional brain subcommand names for the command registry."""
-    return ["list", "switch", "info", "remove", "update"]
+    return ["list", "switch", "info", "remove", "update", "install"]

@@ -6854,6 +6854,12 @@ Output ONLY valid JSON with this structure:
         from hermes_cli.brain_cmds import cmd_brain_list
         cmd_brain_list()
 
+    elif action == "install":
+        slug = getattr(args, "slug", None)
+        no_activate = getattr(args, "no_activate", False)
+        from hermes_cli.brain_cmds import cmd_brain_install
+        cmd_brain_install(slug, no_activate=no_activate)
+
     elif action == "switch":
         name = getattr(args, "name", None)
         if not name:
