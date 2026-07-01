@@ -6,13 +6,40 @@ Usage:
 
 All marketplace brains are free. The full personality_graph.json is
 downloaded once and stored locally at ~/.beam/brains/<name>/personality_graph.json.
+
+If Neo4j is configured (via ``beam brain setup-neo4j``), the brain
+is auto-ingested into Neo4j on install so ``beam brain platform-search``
+and the agent's GraphBackedBrainRetriever work against the same brain
+without a separate ingest step.
 All queries run offline against the local file.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
 import httpx
+
+
+def _is_neo4j_configured() -> bool:
+    """True if the user has set up Neo4j creds (in process env or ~/.hermes/.env).
+
+    Used by ``beam install`` to decide whether to auto-ingest the
+    marketplace brain into Neo4j. If Neo4j isn't configured, the
+    install just leaves the JSON on disk for offline use.
+    """
+    for var in ("NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+        if os.environ.get(var):
+            return True
+    # Fall back to ~/.hermes/.env (where setup-neo4j writes the creds)
+    try:
+        from hermes_cli.config import load_env
+        env = load_env()
+        if env.get("NEO4J_URI") and env.get("NEO4J_USER") and env.get("NEO4J_PASSWORD"):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 API_URL_DEFAULT = "https://api.openbeam.me"
@@ -145,6 +172,24 @@ def cmd_install(args):
     # Show summary
     print(f"  Type: Local (full brain, works offline)")
     print(f"  Path: {brain_path / 'personality_graph.json'}")
+
+    # If Neo4j is configured, auto-ingest the brain into Neo4j so
+    # `beam brain platform-search` works against the same brain
+    # without a separate `platform-ingest` step. This is what makes
+    # the marketplace brain immediately queryable via the agent's
+    # GraphBackedBrainRetriever.
+    if not no_activate and _is_neo4j_configured():
+        try:
+            from brain_platform.cli.integration import _ingest_brain_file_json
+            graph_path = brain_path / "personality_graph.json"
+            if graph_path.exists():
+                _ingest_brain_file_json(graph_path, install_name)
+                print(f"  Neo4j: ingested into group '{install_name}' (Neo4j-backed search is now live)")
+        except Exception as exc:
+            # Don't fail the install if Neo4j ingest fails — the
+            # marketplace brain is still usable offline. Just log it.
+            print(f"  Neo4j: auto-ingest failed ({type(exc).__name__}). "
+                  f"Run 'beam brain platform-ingest {graph_path}' manually.")
 
     # Eagerly materialize ~/.hermes/SOUL.md from the newly-installed
     # brain so the next `beam` launch already has the new identity in
