@@ -88,6 +88,25 @@ def cmd_setup_neo4j(args: Any) -> int:
     print("         -e NEO4J_AUTH=neo4j/password neo4j")
     print()
 
+    # Check if graphiti-core is installed. If not, fail fast with a
+    # clear install instruction — the user will hit a confusing
+    # "No module named 'graphiti_core'" error otherwise.
+    try:
+        import graphiti_core  # noqa: F401
+    except ImportError:
+        print("⚠  graphiti-core is not installed in this Python environment.")
+        print()
+        print("   To use brain_platform with Neo4j, you need to install the")
+        print("   graphiti-core extra. Pick ONE of:")
+        print()
+        print("     pip install 'beam-agent[brain-platform-graph]'")
+        print("     pip install 'beam-agent[brain-platform]'   # full meta-extra")
+        print("     pip install 'beam-agent[all]'              # everything")
+        print()
+        print("   Then re-run this command.")
+        print()
+        return 1
+
     # Show current values
     current_uri = _read_env_value("NEO4J_URI")
     current_user = _read_env_value("NEO4J_USER")

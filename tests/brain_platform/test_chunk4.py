@@ -620,3 +620,65 @@ class TestDefaultGroupIdFromActiveBrain:
         store_instance.search.assert_called_once()
         call_kwargs = store_instance.search.call_args.kwargs
         assert call_kwargs["group_id"] == "explicit-brain"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 9: setup-neo4j detects missing graphiti_core
+# ──────────────────────────────────────────────────────────────────────
+
+class TestSetupNeo4jMissingGraphitiCore:
+    """If graphiti_core isn't installed, setup-neo4j should fail fast
+    with a clear install instruction rather than the cryptic
+    'No module named graphiti_core' error."""
+
+    def test_fails_fast_when_graphiti_core_missing(self, capsys, monkeypatch):
+        """The wizard should detect the missing dep and return exit code 1."""
+        import builtins
+        from brain_platform.cli.integration import cmd_setup_neo4j
+
+        # Block the import of graphiti_core
+        import importlib
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "graphiti_core" or name.startswith("graphiti_core."):
+                raise ImportError(f"No module named '{name}'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        args = MagicMock()
+        result = cmd_setup_neo4j(args)
+
+        # Should fail fast (not save creds, not try to connect)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "graphiti-core is not installed" in captured.out
+        assert "pip install" in captured.out
+        assert "brain-platform-graph" in captured.out
+
+    def test_continues_when_graphiti_core_installed(self, capsys, monkeypatch):
+        """If graphiti_core IS importable, the wizard proceeds normally
+        and asks for connection details (doesn't fail fast)."""
+        from brain_platform.cli.integration import cmd_setup_neo4j
+
+        # The wizard should proceed past the import check
+        # (it'll then ask for URI input; we simulate "no" to keep
+        # existing values)
+
+        # Mock the env-reading functions
+        monkeypatch.setattr(
+            "brain_platform.cli.integration._read_env_value",
+            lambda name: "neo4j+s://existing.io" if "URI" in name else "existing_user"
+        )
+
+        with patch("builtins.input", return_value="n"):  # Don't overwrite
+            args = MagicMock()
+            result = cmd_setup_neo4j(args)
+
+        # Should NOT fail fast — proceeds to the "keep existing" path
+        assert result == 0
+        captured = capsys.readouterr()
+        # The graphiti_core check passed (no error message about it)
+        assert "graphiti-core is not installed" not in captured.out
+        assert "Keeping existing values" in captured.out
