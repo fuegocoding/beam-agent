@@ -10,7 +10,7 @@ Design principles (from research):
 - All edge types read left-to-right: "source VERB target"
 """
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -326,7 +326,7 @@ class BehavioralRule(BaseModel):
     """A trigger → response pattern that defines how the person acts."""
     trigger: str = Field(description="The situation or stimulus, e.g. 'someone pushes back on their idea'")
     response: str = Field(description="What they typically do, e.g. 'goes quiet, then delivers one long synthesized take'")
-    exceptions: str = Field(default="", description="When they break this pattern, e.g. 'with Priya, uses the 48-hour rule instead'")
+    exceptions: Optional[str] = Field(default=None, description="When they break this pattern, e.g. 'with Priya, uses the 48-hour rule instead'")
 
 
 class ContradictionPattern(BaseModel):

@@ -22,8 +22,21 @@ from brain_platform.pipeline.brain_file.schema import GraphCluster, GraphEdge, G
 logger = logging.getLogger(__name__)
 
 
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
+def _run(coro: Any, loop: Any) -> Any:
+    """Run an async coroutine on the store's persistent event loop.
+
+    Uses ``loop.run_until_complete()`` rather than ``asyncio.run()``
+    so the coroutine runs on the same loop that created the Neo4j
+    connection pool. This avoids the "Future attached to a different
+    loop" error that happens when ``asyncio.run()`` creates a new
+    loop each call.
+
+    Falls back to ``asyncio.run()`` when ``loop`` is None or not a
+    real event loop (e.g. a MagicMock in tests).
+    """
+    if loop is None or not isinstance(loop, asyncio.AbstractEventLoop):
+        return asyncio.run(coro)
+    return loop.run_until_complete(coro)
 
 
 @dataclass
@@ -65,12 +78,17 @@ class GraphReader:
             logger.warning("Graphiti not available, returning empty graph data")
             return GraphData()
 
+        # Use the store's persistent event loop so the Neo4j connection
+        # pool stays valid across multiple sync calls.
+        loop = getattr(self._store, "_loop", None)
+
         data = GraphData()
 
         try:
             # ── Entity nodes ──
             entity_nodes = _run(
-                client.nodes.entity.get_by_group_ids([group_id])
+                client.nodes.entity.get_by_group_ids([group_id]),
+                loop,
             )
             for node in entity_nodes:
                 # Read the node's actual type from its labels (set by
@@ -103,13 +121,15 @@ class GraphReader:
 
             # ── Community nodes ──
             community_nodes = _run(
-                client.nodes.community.get_by_group_ids([group_id])
+                client.nodes.community.get_by_group_ids([group_id]),
+                loop,
             )
             for comm in community_nodes:
                 member_ids = []
                 try:
                     comm_edges = _run(
-                        client.edges.community.get_by_group_ids([group_id])
+                        client.edges.community.get_by_group_ids([group_id]),
+                        loop,
                     )
                     member_ids = [
                         str(e.target_node_uuid)
@@ -134,7 +154,8 @@ class GraphReader:
 
             # ── Entity edges ──
             entity_edges = _run(
-                client.edges.entity.get_by_group_ids([group_id])
+                client.edges.entity.get_by_group_ids([group_id]),
+                loop,
             )
             for edge in entity_edges:
                 data.edges.append(

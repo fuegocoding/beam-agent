@@ -76,6 +76,12 @@ class LocalGraphStore:
         self._llm_client = llm_client
         self._embedder = embedder
         self._graphiti: Any = None
+        # Persistent event loop — Graphiti's connection pool is bound to
+        # the loop that created it. Using asyncio.run() per-call would
+        # create a new loop each time, and the Neo4j driver's async
+        # resources would be bound to the (now-closed) old loop, causing
+        # "got Future attached to a different loop" errors on reuse.
+        self._loop: Any = None
 
     def initialize(self) -> None:
         """Connect to Neo4j and build Graphiti's indices/constraints.
@@ -92,22 +98,39 @@ class LocalGraphStore:
         # for the same reason.
         apply_prompt_overrides()
 
-        self._graphiti = Graphiti(
-            uri=self._uri,
-            user=self._user,
-            password=self._password,
-            llm_client=self._llm_client,
-            embedder=self._embedder,
-        )
-        # build_indices_and_constraints is async — bridge it.
-        asyncio.run(self._graphiti.build_indices_and_constraints())
+        # Create a persistent event loop. All async operations on this
+        # store run on this same loop, so connection pools stay valid
+        # across multiple sync calls.
+        self._loop = asyncio.new_event_loop()
+        try:
+            self._graphiti = Graphiti(
+                uri=self._uri,
+                user=self._user,
+                password=self._password,
+                llm_client=self._llm_client,
+                embedder=self._embedder,
+            )
+            # build_indices_and_constraints is async — run on the persistent loop
+            self._loop.run_until_complete(
+                self._graphiti.build_indices_and_constraints()
+            )
+        except Exception:
+            self._loop.close()
+            self._loop = None
+            raise
         logger.info("LocalGraphStore connected to %s (personality prompts active)", self._uri)
 
     def close(self) -> None:
         """Close the Graphiti client and release the Neo4j connection."""
-        if self._graphiti:
-            asyncio.run(self._graphiti.close())
+        if self._graphiti and self._loop:
+            try:
+                self._loop.run_until_complete(self._graphiti.close())
+            except Exception:
+                logger.warning("Error closing Graphiti client", exc_info=True)
             self._graphiti = None
+        if self._loop:
+            self._loop.close()
+            self._loop = None
 
     @property
     def client(self) -> Any:
@@ -138,7 +161,9 @@ class LocalGraphStore:
         list of edge objects with ``.fact`` and ``.name`` attributes
         (same shape as the cloud's ``Retriever.retrieve()``).
         """
-        return asyncio.run(
+        if not self._loop:
+            raise RuntimeError("LocalGraphStore not initialized — call initialize() first")
+        return self._loop.run_until_complete(
             self._graphiti.search(
                 query=query,
                 group_ids=[group_id],
@@ -153,7 +178,9 @@ class LocalGraphStore:
         attempt a simple retrieval against a sentinel group_id.
         """
         try:
-            asyncio.run(
+            if not self._loop:
+                return False
+            self._loop.run_until_complete(
                 self._graphiti.retrieve_episodes(
                     reference_time=None,
                     last_n=1,

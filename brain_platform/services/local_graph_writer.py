@@ -44,9 +44,23 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _run(coro: Any) -> Any:
-    """Run an async coroutine synchronously via asyncio.run()."""
-    return asyncio.run(coro)
+def _run(coro: Any, loop: Any) -> Any:
+    """Run an async coroutine synchronously on the given event loop.
+
+    Uses ``loop.run_until_complete()`` rather than ``asyncio.run()`` so
+    the coroutine runs on the store's persistent loop (created in
+    LocalGraphStore.initialize()). This keeps Neo4j connection pools
+    valid across multiple sync calls.
+
+    Falls back to ``asyncio.run()`` when ``loop`` is None or not a
+    real event loop (e.g. a MagicMock in tests). The isinstance check
+    is important because MagicMock auto-creates any attribute access,
+    so ``store._loop`` returns a MagicMock for stores that don't set
+    it explicitly.
+    """
+    if loop is None or not isinstance(loop, asyncio.AbstractEventLoop):
+        return asyncio.run(coro)
+    return loop.run_until_complete(coro)
 
 
 class LocalGraphWriter:
@@ -118,6 +132,7 @@ class LocalGraphWriter:
         from graphiti_core.nodes import EntityNode
 
         client = self._store.client
+        loop = getattr(self._store, "_loop", None)
         now = _now_utc()
 
         name_to_uuid: dict[str, str] = {}
@@ -133,7 +148,8 @@ class LocalGraphWriter:
             neo4j_client.execute_query(
                 "MATCH (n) WHERE n.group_id = $gid AND n.name = 'THE_USER' RETURN n.uuid AS uuid",
                 parameters_={"gid": group_id},
-            )
+            ),
+            loop,
         )
         if existing_user.records:
             user_uuid = existing_user.records[0]["uuid"]
@@ -147,8 +163,8 @@ class LocalGraphWriter:
                 labels=["Entity"],
                 summary=graph.user_summary,
             )
-            _run(user_node.generate_name_embedding(client.embedder))
-            _run(user_node.save(driver))
+            _run(user_node.generate_name_embedding(client.embedder), loop)
+            _run(user_node.save(driver), loop)
             name_to_uuid["THE_USER"] = user_node.uuid
             name_to_label["THE_USER"] = "Entity"
             nodes_created += 1
@@ -162,7 +178,8 @@ class LocalGraphWriter:
                 RETURN n.name AS name, n.uuid AS uuid, labels(n) AS labels
                 """,
                 parameters_={"gid": group_id},
-            )
+            ),
+            loop,
         )
         for record in existing_nodes_result.records:
             ename = record["name"]
@@ -212,8 +229,8 @@ class LocalGraphWriter:
                     summary=summary,
                     attributes=attrs,
                 )
-                _run(node.generate_name_embedding(client.embedder))
-                _run(node.save(driver))
+                _run(node.generate_name_embedding(client.embedder), loop)
+                _run(node.save(driver), loop)
                 name_to_uuid[name] = node.uuid
                 name_to_label[name] = label
                 nodes_created += 1
@@ -230,7 +247,8 @@ class LocalGraphWriter:
                     RETURN target.uuid AS uuid
                     """,
                     parameters_={"gid": group_id},
-                )
+                ),
+                loop,
             )
             existing_hub_targets = {r["uuid"] for r in hub_check.records}
 
@@ -253,8 +271,8 @@ class LocalGraphWriter:
                 created_at=now,
                 valid_at=now,
             )
-            _run(edge.generate_embedding(client.embedder))
-            _run(edge.save(driver))
+            _run(edge.generate_embedding(client.embedder), loop)
+            _run(edge.save(driver), loop)
             edges_created += 1
 
         logger.info("Created %d hub edges (THE_USER → all nodes)", edges_created)
@@ -301,8 +319,8 @@ class LocalGraphWriter:
                 created_at=now,
                 valid_at=now,
             )
-            _run(edge.generate_embedding(client.embedder))
-            _run(edge.save(driver))
+            _run(edge.generate_embedding(client.embedder), loop)
+            _run(edge.save(driver), loop)
             edges_created += 1
             cross_edges += 1
 

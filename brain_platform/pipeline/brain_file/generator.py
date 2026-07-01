@@ -33,6 +33,8 @@ from brain_platform.pipeline.brain_file.schema import (
     KnowledgeDomain,
     KnowledgeGraph,
     SourceManifestEntry,
+    StyleEmbedding,
+    WritingStyle,
 )
 from brain_platform.pipeline.brain_file.style_analyzer import StyleAnalyzer
 from brain_platform.pipeline.brain_file.style_embedder import StyleEmbedder
@@ -83,17 +85,20 @@ class BrainFileGenerator:
         graph_data = self._graph_reader.read_all(group_id)
 
         # ── 2. Compute style metrics (if texts provided) ──
+        # Always provide a WritingStyle — the schema requires it
+        # (defaults to empty when no texts are available).
         writing_style = (
             self._style_analyzer.analyze(raw_texts)
             if raw_texts
-            else None
+            else WritingStyle()
         )
 
         # ── 3. Compute style embedding (optional — may not have torch) ──
+        # Always provide a StyleEmbedding — the schema requires it.
         style_embedding = (
             self._style_embedder.compute(raw_texts)
             if raw_texts
-            else None
+            else StyleEmbedding()
         )
 
         # ── 4. Extract personality profile (typed nodes + LLM scores) ──
