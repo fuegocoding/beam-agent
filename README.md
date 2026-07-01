@@ -77,8 +77,11 @@ beam install leonardo-da-vinci
 beam install benjamin-franklin
 beam install albert-einstein
 
-# Community brains (other users' published personalities)
+# Community brains (other users' published marketplace personalities, not local files)
+# The @user/slug format is the marketplace publisher + brain slug
+# Browse the catalog at https://openbeam.me/marketplace to find available ones
 beam install @alice/coach
+beam install @bob/socrates
 
 # List the full catalog without installing
 beam install --list
