@@ -591,7 +591,8 @@ class TestDefaultGroupIdFromActiveBrain:
             store_instance.search.return_value = []
             MockStore.return_value = store_instance
 
-            args = MagicMock(query="microsoft", num_results=5, group_id="default_user")
+            # group_id=None simulates "user didn't pass --group-id"
+            args = MagicMock(query="microsoft", num_results=5, group_id=None)
             result = cmd_brain_platform_search(args)
 
         # The search should have used "bill-gates" as the group_id
@@ -599,3 +600,23 @@ class TestDefaultGroupIdFromActiveBrain:
         store_instance.search.assert_called_once()
         call_kwargs = store_instance.search.call_args.kwargs
         assert call_kwargs["group_id"] == "bill-gates"
+
+    def test_search_honors_explicit_group_id(self, capsys, monkeypatch):
+        """If the user explicitly passes --group-id, use that even if
+        it's not the active brain."""
+        from brain_platform.cli.integration import cmd_brain_platform_search
+
+        import brain.paths
+        monkeypatch.setattr(brain.paths, "get_active_brain_name", lambda: "bill-gates")
+
+        with patch("brain_platform.services.local_graph_store.LocalGraphStore") as MockStore:
+            store_instance = MagicMock()
+            store_instance.search.return_value = []
+            MockStore.return_value = store_instance
+
+            args = MagicMock(query="x", num_results=5, group_id="explicit-brain")
+            cmd_brain_platform_search(args)
+
+        store_instance.search.assert_called_once()
+        call_kwargs = store_instance.search.call_args.kwargs
+        assert call_kwargs["group_id"] == "explicit-brain"

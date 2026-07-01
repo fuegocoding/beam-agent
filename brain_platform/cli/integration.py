@@ -15,6 +15,7 @@ memory retrieval) lives in :mod:`brain_platform.runtime_integration`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -172,12 +173,10 @@ def cmd_brain_platform_search(args: Any) -> int:
         return 1
 
     num_results = getattr(args, "num_results", 5)
-    # Default to the active brain's group_id so the command "just works"
-    # against whatever brain the user is currently using.
-    if hasattr(args, "group_id") and args.group_id != "default_user":
-        group_id = args.group_id
-    else:
-        group_id = _get_default_group_id()
+    # Default to the active brain's group_id when the user didn't
+    # explicitly pass --group-id. The argparse default is None (not
+    # "default_user") so we can detect "not specified" here.
+    group_id = getattr(args, "group_id", None) or _get_default_group_id()
 
     try:
         from brain_platform.services.local_graph_store import LocalGraphStore
@@ -221,6 +220,148 @@ def cmd_brain_platform_search(args: Any) -> int:
     return 0
 
 
+def _is_brain_file_schema_json(path: Path) -> bool:
+    """True if the file is a BrainFileSchema JSON (the marketplace brain format).
+
+    These files have the shape:
+        {
+          "metadata": {"schema_version": 2, ...},
+          "personality_profile": {...},
+          "knowledge_graph": {"nodes": [...], "edges": [...]},
+          ...
+        }
+
+    Re-extracting them with BrainExtractor would just produce noise
+    (the LLM can't extract from a JSON dump). Instead, we ingest them
+    directly by writing the existing nodes/edges to Neo4j.
+    """
+    if path.suffix.lower() != ".json":
+        return False
+    try:
+        data = json.loads(path.read_text())
+        return (
+            isinstance(data, dict)
+            and "metadata" in data
+            and "knowledge_graph" in data
+            and isinstance(data["knowledge_graph"], dict)
+            and "nodes" in data["knowledge_graph"]
+        )
+    except Exception:
+        return False
+
+
+def _ingest_brain_file_json(path: Path, group_id: str) -> dict:
+    """Ingest a pre-built BrainFileSchema JSON directly to Neo4j.
+
+    Reads the JSON, extracts the nodes/edges from knowledge_graph,
+    and writes them to Neo4j via LocalGraphWriter. This is the
+    direct-write path (no LLM extraction) — the JSON already has
+    structured nodes/edges that the marketplace brain shipped.
+    """
+    from brain_platform.services.local_graph_store import LocalGraphStore
+    from brain_platform.services.local_graph_writer import LocalGraphWriter
+    from brain_platform.pipeline.brain_file.schema import (
+        BrainFileSchema, GraphNode, GraphEdge, GraphCluster,
+    )
+
+    data = json.loads(path.read_text())
+    brain_file = BrainFileSchema.model_validate(data)
+    kg = brain_file.knowledge_graph
+
+    # Convert Pydantic models to the dict shape LocalGraphWriter expects
+    nodes = [n.model_dump() if hasattr(n, "model_dump") else n for n in kg.nodes]
+    edges = [e.model_dump() if hasattr(e, "model_dump") else e for e in kg.edges]
+
+    store = LocalGraphStore()
+    store.initialize()
+    try:
+        writer = LocalGraphWriter(store)
+        # The marketplace brain JSON has typed nodes (PersonalityTrait,
+        # Belief, etc.) with real labels, summaries, and attributes.
+        # We need to write them directly — building a PersonalityGraph
+        # stub from label counts would throw away all the content.
+        from graphiti_core.nodes import EntityNode
+        from graphiti_core.edges import EntityEdge
+        from datetime import datetime, timezone
+
+        client = store.client
+        driver = client.driver
+        embedder = client.embedder
+        loop = store._loop
+
+        nodes_created = 0
+        nodes_by_id: dict[str, str] = {}
+        now = datetime.now(timezone.utc)
+
+        # Create EntityNodes for each marketplace node
+        for n in nodes:
+            node_id = n.get("id", "")
+            label = n.get("label", "").strip()
+            if not label:
+                continue
+            ntype = n.get("type", "Entity")
+            labels_list = [ntype, "Entity"] if ntype != "Entity" else ["Entity"]
+            summary = n.get("summary", "")
+            attributes = n.get("attributes", {}) or {}
+
+            node = EntityNode(
+                name=label,
+                group_id=group_id,
+                labels=labels_list,
+                summary=summary,
+                attributes=attributes,
+            )
+            loop.run_until_complete(node.generate_name_embedding(embedder))
+            loop.run_until_complete(node.save(driver))
+            nodes_by_id[node_id] = node.uuid
+            nodes_created += 1
+
+        # Create EntityEdges
+        edges_created = 0
+        skipped_edges = 0
+        for e in edges:
+            src_id = e.get("source", "")
+            tgt_id = e.get("target", "")
+            src_uuid = nodes_by_id.get(src_id)
+            tgt_uuid = nodes_by_id.get(tgt_id)
+            if not src_uuid or not tgt_uuid:
+                skipped_edges += 1
+                continue
+            edge = EntityEdge(
+                source_node_uuid=src_uuid,
+                target_node_uuid=tgt_uuid,
+                name=e.get("relation", "INFORMS"),
+                group_id=group_id,
+                fact=e.get("fact", ""),
+                created_at=now,
+                valid_at=now,
+            )
+            loop.run_until_complete(edge.generate_embedding(embedder))
+            loop.run_until_complete(edge.save(driver))
+            edges_created += 1
+
+        # Also create THE_USER as a hub node so the brain is searchable
+        # and connect it to the personality-trait nodes
+        from brain_platform.services.local_graph_writer import LocalGraphWriter as _Writer
+        # Build a stub personality graph with just the user_summary to
+        # trigger THE_USER creation + hub edges
+        from brain_platform.pipeline.brain_schema import PersonalityGraph
+        stub_graph = PersonalityGraph(user_summary="")
+        hub_result = writer.write(graph=stub_graph, group_id=group_id)
+    finally:
+        store.close()
+
+    return {
+        "documents": 1,
+        "chunks": 1,
+        "nodes_created": nodes_created,
+        "edges_created": edges_created,
+        "source_type": "brain_file_json",
+        "file": str(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
 def cmd_brain_platform_ingest(args: Any) -> int:
     """Ingest a file into the brain (parse → chunk → extract → write).
 
@@ -231,6 +372,10 @@ def cmd_brain_platform_ingest(args: Any) -> int:
 
     Supported types: obsidian, pdf, docx, txt, code, prompt, instructions,
     email, journal, reddit
+
+    If the file is a BrainFileSchema JSON (the marketplace brain format
+    with pre-extracted nodes/edges), it skips the LLM extraction and
+    writes the existing graph directly to Neo4j.
     """
     file_path = getattr(args, "file", None)
     if not file_path:
@@ -246,6 +391,26 @@ def cmd_brain_platform_ingest(args: Any) -> int:
     # against whatever brain the user is currently using.
     group_id = getattr(args, "group_id", None) or _get_default_group_id()
     explicit_type = getattr(args, "type", None)
+
+    # Special case: if the file is a BrainFileSchema JSON (the marketplace
+    # brain format), skip LLM extraction and write the existing nodes/edges
+    # directly to Neo4j. Re-extracting a JSON dump produces noise.
+    if _is_brain_file_schema_json(path):
+        try:
+            print(f"Ingesting {path.name} (detected: BrainFileSchema JSON)")
+            result = _ingest_brain_file_json(path, group_id)
+        except Exception as e:
+            print(f"Error: {e}")
+            print("\nIf you haven't set up Neo4j yet, run: beam brain setup-neo4j")
+            return 1
+
+        print(f"\n✓ Ingested {path.name} → Neo4j (group_id={group_id!r}):")
+        print(f"  Source type:  {result['source_type']}")
+        print(f"  Documents:    {result['documents']}")
+        print(f"  Chunks:       {result['chunks']}")
+        print(f"  Nodes:        {result['nodes_created']}")
+        print(f"  Edges:        {result['edges_created']}")
+        return 0
 
     source_type = None
     if explicit_type:
@@ -649,7 +814,7 @@ def register_brain_platform_commands(subparsers: Any) -> None:
             )
             p.add_argument("query", help="Search query")
             p.add_argument("--num-results", type=int, default=5, help="Max facts to return")
-            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--group-id", default=None, help="Graphiti group_id (default: active brain)")
             p.set_defaults(func=cmd_brain_platform_search)
 
             # beam brain platform-ingest
@@ -662,7 +827,7 @@ def register_brain_platform_commands(subparsers: Any) -> None:
             )
             p.add_argument("file", help="Path to file to ingest (.pdf/.docx/.md/.txt/.py/.eml/...)")
             p.add_argument("--type", help="Override detected source type (obsidian/pdf/docx/txt/code/prompt/instructions/email/journal/reddit)")
-            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--group-id", default=None, help="Graphiti group_id (default: active brain)")
             p.set_defaults(func=cmd_brain_platform_ingest)
 
             # beam brain platform-generate — assemble the brain file
@@ -672,7 +837,7 @@ def register_brain_platform_commands(subparsers: Any) -> None:
                 description="Assemble a BrainFileSchema from the Neo4j graph and write to disk",
             )
             p.add_argument("output", help="Path to write the brain file (.json)")
-            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--group-id", default=None, help="Graphiti group_id (default: active brain)")
             p.add_argument("--raw-texts-file", help="Optional .txt file of raw texts for style analysis")
             p.set_defaults(func=cmd_brain_platform_generate)
 
@@ -685,7 +850,7 @@ def register_brain_platform_commands(subparsers: Any) -> None:
             p.add_argument("output", help="Path to write the export")
             p.add_argument("--format", choices=["claude", "jsonld", "obsidian"], default="jsonld",
                           help="Export format (default: jsonld)")
-            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--group-id", default=None, help="Graphiti group_id (default: active brain)")
             p.set_defaults(func=cmd_brain_platform_export)
 
             # beam brain platform-deepen — analyze gaps + generate probes
@@ -694,7 +859,7 @@ def register_brain_platform_commands(subparsers: Any) -> None:
                 help="Analyze brain gaps and generate probe questions",
                 description="Find thin dimensions and ask the LLM for probe questions to fill them",
             )
-            p.add_argument("--group-id", default="default_user", help="Graphiti group_id")
+            p.add_argument("--group-id", default=None, help="Graphiti group_id (default: active brain)")
             p.add_argument("--covered-questions", help="Optional .txt file of already-asked question IDs")
             p.set_defaults(func=cmd_brain_platform_deepen)
 
