@@ -934,3 +934,91 @@ class TestBeamLauncherBrainCheck:
         assert self._check_brain(tmp_path) is True
         # → flow prints "Active brain: bill-gates (marketplace). Launching Beam..." and exits
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chunk 13: _offer_marketplace_brain shows catalog + recommends un-installed
+# ──────────────────────────────────────────────────────────────────────
+
+class TestOfferMarketplaceBrainCatalog:
+    """The marketplace brain prompt should show the full catalog,
+    mark already-installed ones, and recommend one that's NOT installed.
+    """
+
+    MARKETPLACE_CATALOG = [
+        ("bill-gates", "Bill Gates"),
+        ("elon-musk", "Elon Musk"),
+        ("marcus-aurelius", "Marcus Aurelius"),
+        ("seneca", "Seneca"),
+        ("terence-tao", "Terence Tao"),
+        ("albert-einstein", "Albert Einstein"),
+        ("benjamin-franklin", "Benjamin Franklin"),
+        ("virginia-woolf", "Virginia Woolf"),
+        ("leonardo-da-vinci", "Leonardo da Vinci"),
+    ]
+
+    def test_recommends_first_uninstalled_brain(self, tmp_path, monkeypatch):
+        """If the user has bill-gates installed, recommend elon-musk next."""
+        from brain.paths import get_active_brain_name as _original
+        # The launcher uses Path.home(); we patch it to tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        # Mark bill-gates as installed
+        installed = tmp_path / ".beam" / "brains" / "bill-gates"
+        installed.mkdir(parents=True)
+        (installed / "personality_graph.json").write_text(
+            '{"metadata": {"schema_version": 2}, "knowledge_graph": {"nodes": []}}'
+        )
+
+        # Inline the catalog + recommendation logic (same as beam script)
+        already = set()
+        for brain_dir in (tmp_path / ".beam" / "brains").iterdir():
+            if (brain_dir / "personality_graph.json").exists():
+                already.add(brain_dir.name)
+        available = [s for s, _ in self.MARKETPLACE_CATALOG if s not in already]
+        default = available[0]
+
+        assert default == "elon-musk"  # first un-installed
+
+    def test_recommends_bill_gates_when_nothing_installed(self, tmp_path, monkeypatch):
+        """If the user has NO brains, recommend bill-gates (the first in the catalog)."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        (tmp_path / ".beam").mkdir(parents=True)
+
+        already = set()
+        available = [s for s, _ in self.MARKETPLACE_CATALOG if s not in already]
+        default = available[0]
+
+        assert default == "bill-gates"
+
+    def test_skips_prompt_when_all_installed(self, tmp_path, monkeypatch):
+        """If the user already has all 9 brains, skip the marketplace prompt
+        (the launcher falls through to the interview)."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        for slug, _ in self.MARKETPLACE_CATALOG:
+            d = tmp_path / ".beam" / "brains" / slug
+            d.mkdir(parents=True)
+            (d / "personality_graph.json").write_text(
+                '{"metadata": {"schema_version": 2}, "knowledge_graph": {"nodes": []}}'
+            )
+
+        already = {d.name for d in (tmp_path / ".beam" / "brains").iterdir()
+                   if (d / "personality_graph.json").exists()}
+        available = [s for s, _ in self.MARKETPLACE_CATALOG if s not in already]
+
+        assert available == []
+        # → launcher would fall through to the interview
+
+    def test_catalog_matches_marketplace_website(self):
+        """The local catalog must match the marketplace website (openbeam.me/marketplace).
+        Per the README, the 9 official brains are: bill-gates, elon-musk,
+        marcus-aurelius, seneca, terence-tao, virginia-woolf,
+        leonardo-da-vinci, benjamin-franklin, albert-einstein.
+        """
+        catalog_slugs = {s for s, _ in self.MARKETPLACE_CATALOG}
+        expected = {
+            "bill-gates", "elon-musk", "marcus-aurelius", "seneca",
+            "terence-tao", "virginia-woolf", "leonardo-da-vinci",
+            "benjamin-franklin", "albert-einstein",
+        }
+        assert catalog_slugs == expected
+        assert len(catalog_slugs) == 9

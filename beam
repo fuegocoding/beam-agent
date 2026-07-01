@@ -99,6 +99,33 @@ def _offer_marketplace_brain() -> bool:
     """Ask the user if they want to install a marketplace brain instead
     of running the interview. Returns True if a brain was installed.
     """
+    # The full marketplace catalog (mirror of the README table).
+    # Used as the recommended default and as a fallback if the
+    # marketplace API is unreachable.
+    MARKETPLACE_CATALOG = [
+        ("bill-gates", "Bill Gates — technologist, philanthropist"),
+        ("elon-musk", "Elon Musk — engineer, entrepreneur (Tesla/SpaceX)"),
+        ("marcus-aurelius", "Marcus Aurelius — Roman emperor, Stoic philosopher"),
+        ("seneca", "Seneca — Roman Stoic philosopher, tutor to Nero"),
+        ("terence-tao", "Terence Tao — Fields Medalist mathematician"),
+        ("albert-einstein", "Albert Einstein — theoretical physicist"),
+        ("benjamin-franklin", "Benjamin Franklin — founding father, scientist"),
+        ("virginia-woolf", "Virginia Woolf — modernist novelist, feminist"),
+        ("leonardo-da-vinci", "Leonardo da Vinci — Renaissance polymath"),
+    ]
+
+    # Check what's already installed — don't recommend one they have
+    already_installed = set(_list_installed_brains())
+    # Default = first brain in the catalog that's NOT already installed
+    available = [s for s, _ in MARKETPLACE_CATALOG if s not in already_installed]
+    default_slug = available[0] if available else MARKETPLACE_CATALOG[0][0]
+
+    # If the user already has all 9 brains, skip the marketplace prompt
+    if not available:
+        print("\nYou already have all marketplace brains installed.")
+        print("Skipping marketplace step — falling through to the interview.")
+        return False
+
     print("\n" + "=" * 60)
     print("  Two ways to get a brain")
     print("=" * 60)
@@ -109,8 +136,7 @@ def _offer_marketplace_brain() -> bool:
     print("       answers. Run with: beam interview --adaptive")
     print()
     print("  2. Install a pre-built personality (~5 sec download)")
-    print("       Pick from 9 marketplace brains (Bill Gates, Elon Musk,")
-    print("       Marcus Aurelius, etc.). Fully offline after install.")
+    print("       Pick from 9 marketplace brains. Fully offline after install.")
     print("       Browse: https://openbeam.me/marketplace")
     print()
 
@@ -118,12 +144,17 @@ def _offer_marketplace_brain() -> bool:
     if answer in ("n", "no"):
         return False
 
-    # Show a few popular options
-    popular = ["bill-gates", "elon-musk", "marcus-aurelius"]
+    # Show the full catalog with short descriptions
     print()
-    print("Popular brains:", ", ".join(popular))
-    print("(or any other slug from https://openbeam.me/marketplace)")
-    slug = input(f"Slug [{popular[0]}]: ").strip() or popular[0]
+    print("Available brains:")
+    for slug, desc in MARKETPLACE_CATALOG:
+        marker = "  ✓ INSTALLED" if slug in already_installed else ""
+        print(f"  {slug:20s} {desc}{marker}")
+    print()
+    print(f"Recommended: {default_slug} (not yet installed)")
+    print()
+
+    slug = input(f"Slug [{default_slug}]: ").strip() or default_slug
 
     # Delegate to cmd_install
     try:
