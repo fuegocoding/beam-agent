@@ -171,6 +171,80 @@ def _template_soul(graph: dict) -> str:
             lines.append(f"- Formality: {voice['formality_range']}")
         if voice.get("characteristic_phrases"):
             lines.append(f"- Phrases I use: {', '.join(voice['characteristic_phrases'])}")
+        if voice.get("filler_words"):
+            lines.append(f"- Filler words: {', '.join(voice['filler_words'])}")
+        lines.append("")
+
+    behavioral = graph.get("behavioral_rules", [])
+    if isinstance(behavioral, list) and behavioral:
+        lines.append("## How I Behave\n")
+        for rule in behavioral[:8]:
+            if not isinstance(rule, dict):
+                continue
+            trigger = rule.get("trigger", "")
+            response = rule.get("response", "")
+            if not trigger or not response:
+                continue
+            line = f"- When {trigger}: {response}"
+            if rule.get("exceptions"):
+                line += f" (except {rule['exceptions']})"
+            lines.append(line)
+        lines.append("")
+
+    contradictions = graph.get("contradiction_patterns", [])
+    if isinstance(contradictions, list) and contradictions:
+        lines.append("## What I Push Back On\n")
+        for c in contradictions[:6]:
+            if not isinstance(c, dict):
+                continue
+            topic = c.get("topic", "")
+            stance = c.get("stance", "")
+            if not topic or not stance:
+                continue
+            line = f"- **{topic}**: {stance}"
+            if c.get("how_they_push_back"):
+                line += f" — {c['how_they_push_back']}"
+            lines.append(line)
+        lines.append("")
+
+    triggers = graph.get("emotional_triggers", [])
+    if isinstance(triggers, list) and triggers:
+        lines.append("## What Reaches Me\n")
+        for t in triggers[:8]:
+            if not isinstance(t, dict):
+                continue
+            stimulus = t.get("trigger", "")
+            emotion = t.get("emotion", "")
+            if not stimulus or not emotion:
+                continue
+            intensity = t.get("intensity", 0.5)
+            try:
+                intensity_str = f" ({intensity:.0%})" if isinstance(intensity, (int, float)) else ""
+            except (TypeError, ValueError):
+                intensity_str = ""
+            line = f"- {stimulus}{intensity_str} → {emotion}"
+            if t.get("expression"):
+                line += f" — {t['expression']}"
+            lines.append(line)
+        lines.append("")
+
+    moods = graph.get("contextual_moods", [])
+    if isinstance(moods, list) and moods:
+        lines.append("## How I Shift By Context\n")
+        for m in moods[:6]:
+            if not isinstance(m, dict):
+                continue
+            context = m.get("context", "")
+            mood = m.get("mood", "")
+            if not context or not mood:
+                continue
+            extras: list[str] = []
+            for k, label in (("guard_level", "guard"), ("energy_level", "energy")):
+                v = m.get(k)
+                if isinstance(v, (int, float)):
+                    extras.append(f"{label} {v:.0%}")
+            suffix = f" [{', '.join(extras)}]" if extras else ""
+            lines.append(f"- {context}: {mood}{suffix}")
         lines.append("")
 
     work = graph.get("work_dna", {})

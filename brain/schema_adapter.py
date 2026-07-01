@@ -469,6 +469,138 @@ def _iter_marketplace_episodic_memories(graph: Dict[str, Any]) -> Iterator[Dict[
         )
 
 
+def _iter_marketplace_behavioral_rules(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Yield nodes from the marketplace ``behavioral_rules`` block.
+
+    Each rule is a trigger → response pattern (with optional
+    ``exceptions`` clause). The retriever indexes the trigger as the
+    node name and the response as the summary so a query that lands on
+    a trigger pulls the rule's response into context.
+
+    Format: ``{"trigger": str, "response": str, "exceptions": str}``
+    """
+    rules = graph.get("behavioral_rules")
+    if not isinstance(rules, list):
+        return
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        trigger = rule.get("trigger", "")
+        response = rule.get("response", "")
+        if not trigger and not response:
+            continue
+        summary = response
+        if rule.get("exceptions"):
+            summary = f"{response} (except: {rule['exceptions']})"
+        yield _make_node("behavioral_rule", trigger or "behavioral rule", summary)
+
+
+def _iter_marketplace_contradiction_patterns(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Yield nodes from the marketplace ``contradiction_patterns`` block.
+
+    Each pattern is a topic the persona will push back on, with a
+    stance and (optional) push-back style. The retriever indexes the
+    topic as the node name and the stance+style as the summary.
+
+    Format: ``{"topic": str, "stance": str, "how_they_push_back": str}``
+    """
+    patterns = graph.get("contradiction_patterns")
+    if not isinstance(patterns, list):
+        return
+    for pattern in patterns:
+        if not isinstance(pattern, dict):
+            continue
+        topic = pattern.get("topic", "")
+        stance = pattern.get("stance", "")
+        if not topic and not stance:
+            continue
+        summary = stance
+        if pattern.get("how_they_push_back"):
+            summary = f"{stance} — pushes back: {pattern['how_they_push_back']}"
+        yield _make_node("contradiction", topic or "contradiction", summary)
+
+
+def _iter_marketplace_emotional_triggers(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Yield nodes from the marketplace ``emotional_triggers`` block.
+
+    Each trigger is a stimulus → emotion → expression pattern with an
+    intensity score and context. Distinct from
+    ``emotional_profile.energy_sources/drains`` (those describe
+    background recharge/depletion; these describe in-the-moment
+    reactions).
+
+    Format: ``{"trigger": str, "emotion": str, "intensity": float,
+    "expression": str, "context": str, "sensitivity": str}``
+    """
+    triggers = graph.get("emotional_triggers")
+    if not isinstance(triggers, list):
+        return
+    for trig in triggers:
+        if not isinstance(trig, dict):
+            continue
+        stimulus = trig.get("trigger", "")
+        emotion = trig.get("emotion", "")
+        if not stimulus and not emotion:
+            continue
+        expression = trig.get("expression", "")
+        context = trig.get("context", "")
+        parts: list[str] = []
+        if emotion:
+            parts.append(f"→ {emotion}")
+        if expression:
+            parts.append(expression)
+        if context:
+            parts.append(f"(when: {context})")
+        summary = " ".join(parts) if parts else stimulus
+        intensity = _coerce_score(trig.get("intensity"))
+        yield _make_node(
+            "emotional_trigger",
+            stimulus or "emotional trigger",
+            summary,
+            confidence=intensity if intensity is not None else _DEFAULT_CONFIDENCE,
+            extra={"sensitivity": trig.get("sensitivity", "public")},
+        )
+
+
+def _iter_marketplace_contextual_moods(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Yield nodes from the marketplace ``contextual_moods`` block.
+
+    Each entry is a social context → mood + guard/energy levels. The
+    retriever indexes the context as the name and the mood as the
+    summary so a query about a setting (e.g. "with family") pulls the
+    right behavior into context.
+
+    Format: ``{"context": str, "mood": str, "guard_level": float,
+    "energy_level": float, "sensitivity": str}``
+    """
+    moods = graph.get("contextual_moods")
+    if not isinstance(moods, list):
+        return
+    for mood in moods:
+        if not isinstance(mood, dict):
+            continue
+        context = mood.get("context", "")
+        mood_text = mood.get("mood", "")
+        if not context and not mood_text:
+            continue
+        guard = _coerce_score(mood.get("guard_level"))
+        energy = _coerce_score(mood.get("energy_level"))
+        suffix_parts: list[str] = []
+        if guard is not None:
+            suffix_parts.append(f"guard {guard:.0%}")
+        if energy is not None:
+            suffix_parts.append(f"energy {energy:.0%}")
+        summary = mood_text
+        if suffix_parts:
+            summary = f"{mood_text} [{', '.join(suffix_parts)}]" if mood_text else ", ".join(suffix_parts)
+        yield _make_node(
+            "contextual_mood",
+            context or "context",
+            summary,
+            extra={"sensitivity": mood.get("sensitivity", "public")},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -484,6 +616,10 @@ _NODE_ITERATORS = (
     _iter_marketplace_knowledge_graph,
     _iter_marketplace_knowledge_domains,
     _iter_marketplace_episodic_memories,
+    _iter_marketplace_behavioral_rules,
+    _iter_marketplace_contradiction_patterns,
+    _iter_marketplace_emotional_triggers,
+    _iter_marketplace_contextual_moods,
 )
 
 
@@ -509,12 +645,52 @@ def collect_nodes(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(iter_nodes(graph))
 
 
+def _build_marketplace_id_label_map(graph: Dict[str, Any]) -> Dict[str, str]:
+    """Build a UUID → label map from ``knowledge_graph.nodes``.
+
+    Marketplace edges use UUID refs (``source`` / ``target``) instead
+    of the legacy ``source_name`` / ``target_name`` strings the
+    retriever's edge-connector expects. Resolving the UUIDs to human
+    labels at edge-iteration time makes the marketplace edges usable
+    by the same retriever code path.
+    """
+    out: Dict[str, str] = {}
+    kg = graph.get("knowledge_graph")
+    if not isinstance(kg, dict):
+        return out
+    nodes = kg.get("nodes")
+    if not isinstance(nodes, list):
+        return out
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        nid = node.get("id")
+        if not nid:
+            continue
+        label = node.get("label") or nid
+        clean_label, _, _ = _split_embedded_score(label)
+        out[nid] = clean_label or label
+    return out
+
+
 def iter_edges(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
     """Yield edges from any supported schema.
 
     The legacy schema has top-level ``edges`` (a list of dicts); the
     marketplace schema nests them under ``knowledge_graph.edges``.
     Yields copies so callers can mutate freely.
+
+    For marketplace edges, the function normalizes the schema mismatch
+    so the retriever's edge-connector works on either input:
+
+      - ``relation`` (marketplace) → ``edge_type`` (legacy)
+      - ``source`` / ``target`` UUIDs (marketplace) →
+        ``source_name`` / ``target_name`` labels (legacy) via the
+        UUID→label map built from ``knowledge_graph.nodes``
+
+    The original marketplace fields (``relation``, ``source``,
+    ``target``) are preserved on the yielded dict so callers that
+    already know the marketplace schema keep working.
     """
     if not isinstance(graph, dict):
         return
@@ -527,9 +703,22 @@ def iter_edges(graph: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
     if isinstance(kg, dict):
         kg_edges = kg.get("edges")
         if isinstance(kg_edges, list):
+            id_map = _build_marketplace_id_label_map(graph)
             for edge in kg_edges:
-                if isinstance(edge, dict):
-                    yield dict(edge)
+                if not isinstance(edge, dict):
+                    continue
+                out = dict(edge)
+                # relation → edge_type (only if edge_type missing)
+                if "edge_type" not in out and "relation" in out:
+                    out["edge_type"] = out["relation"]
+                # UUIDs → labels for legacy callers
+                src = out.get("source")
+                tgt = out.get("target")
+                if isinstance(src, str) and src in id_map and "source_name" not in out:
+                    out["source_name"] = id_map[src]
+                if isinstance(tgt, str) and tgt in id_map and "target_name" not in out:
+                    out["target_name"] = id_map[tgt]
+                yield out
 
 
 def has_marketplace_payload(graph: Dict[str, Any]) -> bool:

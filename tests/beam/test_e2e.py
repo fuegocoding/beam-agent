@@ -365,6 +365,303 @@ class TestMarketplaceSchemaBrain:
         assert result["nodes"][0]["type"] == "trait"
         assert result["nodes"][0]["relevance"] > 0
 
+    def test_behavioral_rules_surface_as_nodes(self):
+        """The marketplace ``behavioral_rules`` block must surface as
+        ``behavioral_rule`` nodes. These are the trigger→response
+        patterns that define how a person acts — exactly what
+        ``brain_search`` should hit for "how does X approach Y"."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "behavioral_rules": [
+                {
+                    "trigger": "asked to compromise on intellectual honesty",
+                    "response": "refuses firmly but explains why with a specific example",
+                    "exceptions": "",
+                },
+                {
+                    "trigger": "faced with a hard problem",
+                    "response": "breaks it into first principles and starts at the physics",
+                    "exceptions": "never when time is critical",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "behavioral_rule"]
+        assert len(nodes) == 2
+        triggers = {n["name"] for n in nodes}
+        assert "asked to compromise on intellectual honesty" in triggers
+        # The exception clause must propagate into the summary.
+        exception_node = next(
+            n for n in nodes
+            if n["name"] == "faced with a hard problem"
+        )
+        assert "except: never when time is critical" in exception_node["summary"]
+
+    def test_contradiction_patterns_surface_as_nodes(self):
+        """The marketplace ``contradiction_patterns`` block must surface
+        as ``contradiction`` nodes — these are the topics a persona
+        will actively push back on."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "contradiction_patterns": [
+                {
+                    "topic": "luck vs systems",
+                    "stance": "most things people call luck are systems you can learn",
+                    "how_they_push_back": "uses card game examples to show probabilities",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "contradiction"]
+        assert len(nodes) == 1
+        assert nodes[0]["name"] == "luck vs systems"
+        assert "systems you can learn" in nodes[0]["summary"]
+        assert "card game examples" in nodes[0]["summary"]
+
+    def test_emotional_triggers_surface_as_nodes_with_intensity(self):
+        """The marketplace ``emotional_triggers`` block must surface as
+        ``emotional_trigger`` nodes with intensity preserved as
+        ``confidence`` (the retriever's existing score field)."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "emotional_triggers": [
+                {
+                    "trigger": "Something seems impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.95,
+                    "expression": "Becomes laser-focused",
+                    "context": "When an industry says it can't be done",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "emotional_trigger"]
+        assert len(nodes) == 1
+        n = nodes[0]
+        assert n["name"] == "Something seems impossible"
+        assert n["confidence"] == 0.95
+        assert "competitive obsession" in n["summary"]
+        assert "Becomes laser-focused" in n["summary"]
+        # Sensitivity defaults to public; this gates visitor/known trust.
+        # The schema adapter spreads ``extra`` onto the top level of the
+        # node dict via :func:`brain.schema_adapter._make_node`, so
+        # ``sensitivity`` is at the root, not under ``extra``.
+        assert n.get("sensitivity") == "public"
+
+    def test_emotional_trigger_sensitivity_gating(self):
+        """``emotional_trigger`` nodes with ``sensitivity=personal`` must
+        be hidden at trust_level=visitor (mirrors the legacy boundary
+        owner-only filter)."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "emotional_triggers": [
+                {
+                    "trigger": "Public embarrassment",
+                    "emotion": "shame",
+                    "intensity": 0.9,
+                    "sensitivity": "personal",
+                },
+                {
+                    "trigger": "Someone says it is impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.95,
+                    "sensitivity": "public",
+                },
+            ]
+        }
+        retriever = BrainRetriever()
+        # visitor: only public sensitivity shows up
+        visitor_hits = retriever.search("impossible embarrassment", graph, "visitor", "full")["nodes"]
+        visitor_triggers = [n for n in visitor_hits if n["type"] == "emotional_trigger"]
+        trigger_names = {n["name"] for n in visitor_triggers}
+        assert "Someone says it is impossible" in trigger_names
+        assert "Public embarrassment" not in trigger_names
+        # owner: both show
+        owner_hits = retriever.search("impossible embarrassment", graph, "owner", "full")["nodes"]
+        owner_triggers = [n for n in owner_hits if n["type"] == "emotional_trigger"]
+        assert {n["name"] for n in owner_triggers} == {
+            "Someone says it is impossible",
+            "Public embarrassment",
+        }
+
+    def test_contextual_moods_surface_as_nodes(self):
+        """The marketplace ``contextual_moods`` block must surface as
+        ``contextual_mood`` nodes with guard/energy levels."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "contextual_moods": [
+                {
+                    "context": "With close family",
+                    "mood": "Quietly competitive, focused, sometimes sharp",
+                    "guard_level": 0.3,
+                    "energy_level": 0.7,
+                    "sensitivity": "personal",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "contextual_mood"]
+        assert len(nodes) == 1
+        n = nodes[0]
+        assert n["name"] == "With close family"
+        assert "Quietly competitive" in n["summary"]
+        assert "guard 30%" in n["summary"]
+        assert "energy 70%" in n["summary"]
+
+    def test_marketplace_edges_normalize_relation_to_edge_type(self):
+        """Marketplace edges use ``relation`` (not ``edge_type``) and
+        reference source/target as UUIDs. The adapter must normalize
+        so the retriever's edge-connector works on either schema."""
+        from brain.schema_adapter import iter_edges
+
+        graph = {
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "n1", "type": "Value", "label": "Equity"},
+                    {"id": "n2", "type": "Belief", "label": "Every life has equal value"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "relation": "ENFORCES",
+                        "fact": "Equity enforces equal-value belief.",
+                        "weight": 1.0,
+                    },
+                ],
+            }
+        }
+        edges = list(iter_edges(graph))
+        assert len(edges) == 1
+        e = edges[0]
+        # relation is preserved for marketplace callers.
+        assert e["relation"] == "ENFORCES"
+        # edge_type populated from relation for legacy callers.
+        assert e["edge_type"] == "ENFORCES"
+        # UUIDs resolved to labels via the node map.
+        assert e["source_name"] == "Equity"
+        assert e["target_name"] == "Every life has equal value"
+        # Original UUIDs preserved.
+        assert e["source"] == "n1"
+        assert e["target"] == "n2"
+
+    def test_marketplace_edges_preserve_legacy_when_both_present(self):
+        """If a marketplace edge already has ``edge_type`` (e.g. a
+        hand-edited brain), the adapter must not clobber it with the
+        ``relation`` value."""
+        from brain.schema_adapter import iter_edges
+
+        graph = {
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "n1", "type": "Value", "label": "X"},
+                    {"id": "n2", "type": "Belief", "label": "Y"},
+                ],
+                "edges": [
+                    {
+                        "source": "n1",
+                        "target": "n2",
+                        "relation": "WRONG_RELATION",
+                        "edge_type": "CORRECT_TYPE",
+                        "fact": "f",
+                    },
+                ],
+            }
+        }
+        edges = list(iter_edges(graph))
+        assert edges[0]["edge_type"] == "CORRECT_TYPE"
+        assert edges[0]["relation"] == "WRONG_RELATION"
+
+    def test_build_context_includes_voice_dna_phrases_and_emotional(self):
+        """``build_context`` should surface voice_dna phrases, filler
+        words, baseline mood, reaction speed, recovery, and energy
+        sources/drains — not just humor + response style. Previously
+        the prompt-time context was 468 chars and dropped most of
+        this rich data."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "personality_profile": {
+                "values": ["Curiosity (0.95): reads about everything"],
+            },
+            "voice_dna": {
+                "humor_style": "dry wit",
+                "response_length_pattern": "short bursts",
+                "formality_range": "casual",
+                "characteristic_phrases": ["the math is the math", "first principles"],
+                "filler_words": ["well", "honestly"],
+            },
+            "emotional_profile": {
+                "baseline_mood": "Intense and restless",
+                "reaction_speed": "Fast when engaged",
+                "recovery_pattern": "Returns to work",
+                "energy_sources": ["solving hard problems"],
+                "energy_drains": ["bureaucracy"],
+            },
+        }
+        retriever = BrainRetriever()
+        ctx = retriever.build_context(graph, "owner", "standard")["context"]
+        assert "the math is the math" in ctx
+        assert "first principles" in ctx
+        assert "Filler words: well, honestly" in ctx
+        assert "Baseline mood: Intense and restless" in ctx
+        assert "Reaction speed: Fast when engaged" in ctx
+        assert "Recovery: Returns to work" in ctx
+        assert "Energy sources: solving hard problems" in ctx
+        assert "Energy drains: bureaucracy" in ctx
+
+    def test_format_context_renders_new_node_types(self, marketplace_graph):
+        """The retriever's per-turn context formatter must render the
+        new node types (behavioral_rule, contradiction,
+        emotional_trigger, contextual_mood) into the context string."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "behavioral_rules": [
+                {
+                    "trigger": "faced with a hard problem",
+                    "response": "breaks it into first principles",
+                }
+            ],
+            "contradiction_patterns": [
+                {"topic": "luck vs systems", "stance": "systems beat luck"},
+            ],
+            "emotional_triggers": [
+                {
+                    "trigger": "Something seems impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.9,
+                }
+            ],
+            "contextual_moods": [
+                {"context": "with close family", "mood": "Quietly focused"},
+            ],
+        }
+        retriever = BrainRetriever()
+        ctx = retriever.build_context(graph, "owner", "full")["context"]
+        # Note: build_context only renders the legacy top-N fields;
+        # _format_context is what the search path uses. We invoke the
+        # formatter directly via a synthesized search result instead.
+        from brain.brain_retriever import _format_context
+        nodes = list(retriever.search("first principles", graph, "owner", "full")["nodes"])
+        for n in nodes:
+            n.pop("relevance", None)
+        # Add a node for each new type by hand (search may not have
+        # scored them; the formatter is what we want to test).
+        from brain.schema_adapter import iter_nodes
+        all_nodes = list(iter_nodes(graph))
+        formatted = _format_context(all_nodes, graph, "full")
+        assert "Behavioral rule" in formatted
+        assert "first principles" in formatted
+        assert "Will push back on" in formatted
+        assert "luck vs systems" in formatted
+        assert "Emotional trigger" in formatted
+        assert "competitive obsession" in formatted
+        assert "In context" in formatted
+        assert "with close family" in formatted
+
 
 class TestBrainBuilder:
     """Test offline transcript → graph conversion."""

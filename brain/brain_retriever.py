@@ -55,8 +55,29 @@ def _search_nodes(graph: dict, query: str, trust_level: str = "owner") -> list:
     # trust_level, mirroring the legacy gating.
     owner_only_types = {"boundary"}
 
+    def _passes_sensitivity(node: dict) -> bool:
+        """Apply marketplace `sensitivity` gating to non-owner trust levels.
+
+        Marketplace ``emotional_trigger`` and ``contextual_mood`` nodes
+        carry a ``sensitivity`` field — populated by
+        :func:`brain.schema_adapter._make_node` which spreads ``extra``
+        onto the top level of the node dict. Defaults to ``public``
+        when the source schema didn't include the field. Mirrors the
+        legacy ``passes_trust_filter`` used by the Rust runtime
+        (``brain-rust/beam-brain-runtime/src/main.rs:196-202``).
+        """
+        if trust_level == "owner":
+            return True
+        sens = node.get("sensitivity", "public")
+        if trust_level == "visitor":
+            return sens == "public"
+        # "known": public + personal
+        return sens in ("public", "personal")
+
     for node in iter_nodes(graph):
         if trust_level != "owner" and node.get("type") in owner_only_types:
+            continue
+        if not _passes_sensitivity(node):
             continue
         _score_node(node)
 
@@ -128,6 +149,15 @@ def _format_context(nodes: list, graph: dict, brain_power: str = "standard") -> 
             parts.append(f"Procedural pattern '{node['name']}': {node.get('summary', '')}")
         elif ntype == "work_loop":
             parts.append(f"Work loop '{node['name']}': {node.get('summary', '')}")
+        elif ntype == "behavioral_rule":
+            parts.append(f"Behavioral rule — when '{node['name']}': {node.get('summary', '')}")
+        elif ntype == "contradiction":
+            parts.append(f"Will push back on '{node['name']}': {node.get('summary', '')}")
+        elif ntype == "emotional_trigger":
+            intensity = node.get("confidence", 0.5)
+            parts.append(f"Emotional trigger '{node['name']}' (intensity {intensity:.0%}): {node.get('summary', '')}")
+        elif ntype == "contextual_mood":
+            parts.append(f"In context '{node['name']}': {node.get('summary', '')}")
         elif ntype == "transcript_excerpt":
             parts.append(f"Transcript excerpt: …{node.get('summary', '')}…")
         elif ntype in ("knowledge_node", "concept", "place"):
@@ -212,6 +242,33 @@ class BrainRetriever:
             parts.append(f"Humor: {voice['humor_style']}")
         if voice.get("response_length_pattern"):
             parts.append(f"Response style: {voice['response_length_pattern']}")
+        if voice.get("formality_range"):
+            parts.append(f"Formality: {voice['formality_range']}")
+        if voice.get("characteristic_phrases"):
+            phrases = voice["characteristic_phrases"]
+            if isinstance(phrases, list) and phrases:
+                joined = ", ".join(f'"{p}"' for p in phrases[:5])
+                parts.append(f"Phrases I use: {joined}")
+        if voice.get("filler_words"):
+            filler = voice["filler_words"]
+            if isinstance(filler, list) and filler:
+                parts.append(f"Filler words: {', '.join(filler)}")
+
+        emotional = graph.get("emotional_profile", {})
+        if emotional.get("baseline_mood"):
+            parts.append(f"Baseline mood: {emotional['baseline_mood']}")
+        if emotional.get("reaction_speed"):
+            parts.append(f"Reaction speed: {emotional['reaction_speed']}")
+        if emotional.get("recovery_pattern"):
+            parts.append(f"Recovery: {emotional['recovery_pattern']}")
+        if emotional.get("energy_sources"):
+            sources = emotional["energy_sources"]
+            if isinstance(sources, list) and sources:
+                parts.append(f"Energy sources: {', '.join(sources)}")
+        if emotional.get("energy_drains"):
+            drains = emotional["energy_drains"]
+            if isinstance(drains, list) and drains:
+                parts.append(f"Energy drains: {', '.join(drains)}")
 
         return {"context": "\n".join(parts)}
 
