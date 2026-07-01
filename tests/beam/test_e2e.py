@@ -663,6 +663,275 @@ class TestMarketplaceSchemaBrain:
         assert "with close family" in formatted
 
 
+class TestEdgeSearch:
+    """Edge search is result-anchored: an edge is only meaningful
+    once its endpoint concepts are already known. These tests pin
+    the scoring model and the brain_power cap.
+    """
+
+    def _graph_with_edges(self):
+        """A graph with both legacy edges and marketplace edges.
+
+        The legacy edge uses ``source_name``/``target_name`` directly;
+        the marketplace edge uses UUIDs that must be resolved to labels
+        by ``iter_edges`` before edge search can anchor them.
+        """
+        return {
+            "traits": [
+                {"name": "analytical", "summary": "thinks in systems"},
+            ],
+            "beliefs": [
+                {"name": "Equity", "summary": "every life has equal value"},
+            ],
+            "edges": [
+                {
+                    "source_name": "analytical",
+                    "target_name": "Equity",
+                    "edge_type": "INFORMS",
+                    "fact": "Analytical thinking informs the equity belief.",
+                },
+            ],
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "u1", "type": "Value", "label": "Family"},
+                    {"id": "u2", "type": "Belief", "label": "Education matters"},
+                ],
+                "edges": [
+                    {
+                        "id": "m1",
+                        "source": "u1",
+                        "target": "u2",
+                        "relation": "DRIVES",
+                        "fact": "Family drives the education belief strongly.",
+                        "weight": 0.8,
+                    },
+                ],
+            },
+        }
+
+    def test_edge_anchored_to_result_node_surfaces(self):
+        """An edge whose source or target is in the node search results
+        must surface. This is the core contract — edges only mean
+        something when their endpoint concepts are already known."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # The "analytical" trait is in the node result set.
+        result = retriever.search("analytical", self._graph_with_edges(), "owner", "full")
+        edges = result["edges"]
+        assert len(edges) >= 1
+        # The legacy edge (analytical → Equity, INFORMS) surfaces.
+        legacy = [e for e in edges if e["source"] == "analytical"]
+        assert len(legacy) == 1
+        assert legacy[0]["relation"] == "INFORMS"
+        assert "Analytical thinking" in legacy[0]["fact"]
+
+    def test_marketplace_edge_resolves_uuid_to_label(self):
+        """Marketplace edges use UUIDs for source/target. The retriever
+        must resolve those to labels via the knowledge_graph.nodes map
+        before anchoring to result node names."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Query for "Family" — it's a node in the marketplace graph.
+        result = retriever.search("Family", self._graph_with_edges(), "owner", "full")
+        edges = result["edges"]
+        # The marketplace edge Family → Education matters should surface
+        # with its resolved label, not the UUID.
+        m_edges = [e for e in edges if e["source"] == "Family"]
+        assert len(m_edges) == 1
+        assert m_edges[0]["target"] == "Education matters"
+        assert m_edges[0]["relation"] == "DRIVES"
+        assert m_edges[0]["weight"] == 0.8
+
+    def test_edge_unanchored_to_any_result_node_excluded(self):
+        """An edge whose source and target are NEITHER in the result
+        set must be dropped — without a name anchor the agent has no
+        way to ground the relation."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Query for something unrelated to any edge endpoint.
+        result = retriever.search("completely_unrelated_xyz", self._graph_with_edges(), "owner", "full")
+        # No result node names to anchor to -> no edges.
+        assert result["edges"] == []
+
+    def test_edge_missing_resolved_names_skipped(self):
+        """Edges where the UUIDs failed to resolve (no matching node
+        in knowledge_graph.nodes) must be skipped — the schema adapter
+        leaves source_name/target_name empty, so there is nothing to
+        anchor against."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "Known",
+                    "target_name": "Other",
+                    "edge_type": "RELATES_TO",
+                    "fact": "Known relates to Other.",
+                },
+                {
+                    # UUIDs that don't resolve — both source_name/target_name missing.
+                    "source": "ghost-uuid-1",
+                    "target": "ghost-uuid-2",
+                    "relation": "RELATES_TO",
+                    "fact": "Ghost edges should not surface.",
+                },
+            ],
+            "knowledge_graph": {
+                "nodes": [{"id": "real", "type": "Value", "label": "Real"}],
+                "edges": [],
+            },
+        }
+        # result_node_names includes "Known" — only the first edge anchors.
+        edges = _search_edges(graph, "test", {"Known", "Other", "Real"}, "full")
+        assert len(edges) == 1
+        assert edges[0]["source"] == "Known"
+
+    def test_edge_with_both_endpoints_in_results_scores_higher(self):
+        """An edge connecting TWO result nodes describes a relationship
+        the agent has direct context for, so it should score higher
+        than an edge with only one endpoint in the result set."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "Alpha", "target_name": "Beta",
+                    "edge_type": "REL", "fact": "Alpha relates to Beta.",
+                },
+                {
+                    "source_name": "Alpha", "target_name": "Gamma",
+                    "edge_type": "REL", "fact": "Alpha relates to Gamma.",
+                },
+            ],
+        }
+        # Only Alpha in result set: second edge (Beta anchor) wins because
+        # its source is anchored, but the first edge (Gamma) ALSO has
+        # Alpha anchored, so both should surface. The first edge has
+        # BOTH endpoints anchored (Alpha, Beta) -> higher score.
+        edges = _search_edges(graph, "test", {"Alpha", "Beta"}, "full")
+        assert len(edges) == 2
+        # The Beta edge should rank first (both endpoints in results).
+        assert edges[0]["target"] == "Beta"
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_fact_matching_query_boosts_score(self):
+        """When the edge's ``fact`` field contains query words, the
+        edge should score higher than one whose endpoints are anchored
+        but whose fact is unrelated to the query."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "A", "target_name": "B",
+                    "edge_type": "REL", "fact": "completely unrelated prose.",
+                },
+                {
+                    "source_name": "A", "target_name": "C",
+                    "edge_type": "REL", "fact": "Strong education focus on equity.",
+                },
+            ],
+        }
+        edges = _search_edges(graph, "education", {"A", "B", "C"}, "full")
+        # C edge should rank first because its fact matches "education".
+        assert edges[0]["target"] == "C"
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_weight_contributes_to_score(self):
+        """A higher marketplace ``weight`` (graph-writer confidence)
+        should nudge the edge's relevance up."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "A", "target_name": "B",
+                    "edge_type": "REL", "fact": "f", "weight": 0.0,
+                },
+                {
+                    "source_name": "A", "target_name": "C",
+                    "edge_type": "REL", "fact": "f", "weight": 1.0,
+                },
+            ],
+        }
+        edges = _search_edges(graph, "test", {"A", "B", "C"}, "full")
+        assert edges[0]["target"] == "C"  # higher weight wins
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_cap_by_brain_power(self):
+        """The edge result is capped by brain_power: light=1,
+        standard=5, full=15. The cap is applied AFTER scoring, so
+        the highest-relevance edges always win the slots."""
+        from brain.brain_retriever import _search_edges
+        # 10 edges, all anchored, all with the same fact (equal base score).
+        graph = {
+            "edges": [
+                {
+                    "source_name": f"A{i}", "target_name": "Z",
+                    "edge_type": "REL", "fact": f"edge {i}",
+                }
+                for i in range(10)
+            ],
+        }
+        names = {f"A{i}" for i in range(10)} | {"Z"}
+        light = _search_edges(graph, "test", names, "light")
+        standard = _search_edges(graph, "test", names, "standard")
+        full = _search_edges(graph, "test", names, "full")
+        assert len(light) == 1
+        assert len(standard) == 5
+        assert len(full) == 10  # only 10 edges exist
+
+    def test_edge_search_uses_full_node_set_not_truncated(self):
+        """Edge search must anchor against the FULL pre-truncation node
+        list, not the brain_power-truncated context. An edge that
+        connects two concepts outside the top-10 still matters."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Build a graph where many nodes match the query, but only a
+        # few of them are connected by edges.
+        graph = {
+            "traits": [
+                {"name": f"trait_{i}", "summary": "keyword match"}
+                for i in range(20)
+            ],
+            "edges": [
+                {
+                    "source_name": "trait_15",
+                    "target_name": "trait_18",
+                    "edge_type": "REL",
+                    "fact": "Trait 15 and 18 are linked.",
+                },
+            ],
+        }
+        result = retriever.search("keyword", graph, "owner", "light")
+        # light = brain_power context cap of 3 nodes, but edge search
+        # must still find the edge between trait_15 and trait_18
+        # (both matched by the node search, just not in the top 3).
+        edge_facts = [e["fact"] for e in result["edges"]]
+        assert any("Trait 15 and 18" in f for f in edge_facts)
+
+    def test_search_return_shape_includes_edges_field(self):
+        """BrainRetriever.search must return the structured ``edges``
+        list (not the legacy empty placeholder). The brain_search
+        tool handler in plugins/brain-tools/__init__.py dumps the
+        whole result as JSON, so the agent sees both nodes and edges."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("analytical", self._graph_with_edges(), "owner", "full")
+        assert "edges" in result
+        assert isinstance(result["edges"], list)
+        # And the legacy field is no longer hard-coded to [].
+        assert result["edges"] != []
+        # Other fields are still present.
+        assert "nodes" in result
+        assert "context" in result
+        assert "total_matches" in result
+
+    def test_edge_search_empty_result_node_names(self):
+        """If the node search returns no names (empty result set or
+        no names field), edge search returns an empty list rather
+        than crashing on the lowercased empty set."""
+        from brain.brain_retriever import _search_edges
+        edges = _search_edges(self._graph_with_edges(), "test", set(), "full")
+        assert edges == []
+
+
 class TestBrainBuilder:
     """Test offline transcript → graph conversion."""
 

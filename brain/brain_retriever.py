@@ -170,17 +170,117 @@ def _format_context(nodes: list, graph: dict, brain_power: str = "standard") -> 
     return "\n".join(parts)
 
 
+def _search_edges(
+    graph: dict,
+    query: str,
+    result_node_names: set[str],
+    brain_power: str = "standard",
+) -> list:
+    """Find edges anchored to the result nodes from a node search.
+
+    Edge search is fundamentally different from node search:
+
+    * **Node search is query-driven** — score each node by keyword
+      overlap with the query, independent of other nodes.
+    * **Edge search is result-anchored** — an edge like
+      "Equity ENFORCES Every life has equal value" is a relation
+      between two concepts, and is only meaningful once those
+      concepts are known. So edge search runs *after* node search
+      and only surfaces edges whose source or target was already
+      matched.
+
+    The relevance score blends three signals:
+      - 0.4 base for being connected to any result node,
+      - +0.3 if BOTH endpoints are in the result set (the edge
+        describes a relationship the agent just learned about
+        between two concepts it already cares about),
+      - +0.3 scaled by fact-text / query overlap (the edge's
+        one-sentence ``fact`` is more relevant to the query),
+      - +0.1 scaled by the marketplace ``weight`` field (the
+        graph writer's confidence in the edge).
+
+    The result is capped by brain_power so the agent's tool
+    response stays bounded: light=1, standard=5, full=15.
+
+    Edges that fail to resolve to a name (the schema adapter
+    leaves ``source_name`` / ``target_name`` empty when a UUID
+    doesn't match a node) are dropped — without a name anchor
+    there's nothing for the agent to ground the relation in.
+    """
+    if not result_node_names:
+        return []
+
+    from brain.schema_adapter import iter_edges
+
+    query_words = set(query.lower().split()) if query else set()
+    names_lower = {n.lower() for n in result_node_names if n}
+
+    max_edges = {"light": 1, "standard": 5, "full": 15}.get(brain_power, 5)
+
+    matched: list = []
+    for edge in iter_edges(graph):
+        source = (edge.get("source_name") or "").strip()
+        target = (edge.get("target_name") or "").strip()
+        if not source and not target:
+            continue
+
+        source_match = source.lower() in names_lower if source else False
+        target_match = target.lower() in names_lower if target else False
+        if not source_match and not target_match:
+            continue
+
+        score = 0.4
+        if source_match and target_match:
+            score += 0.3
+
+        fact = edge.get("fact", "")
+        if fact and query_words:
+            fact_words = set(fact.lower().split())
+            overlap = len(query_words & fact_words)
+            if overlap:
+                score += 0.3 * (overlap / len(query_words))
+
+        weight = edge.get("weight")
+        if isinstance(weight, (int, float)) and 0 <= weight <= 1:
+            score += 0.1 * float(weight)
+
+        matched.append({
+            "source": source,
+            "target": target,
+            "relation": edge.get("edge_type") or edge.get("relation", ""),
+            "fact": fact,
+            "weight": weight if isinstance(weight, (int, float)) else None,
+            "relevance": min(score, 1.0),
+        })
+
+    matched.sort(key=lambda e: e["relevance"], reverse=True)
+    return matched[:max_edges]
+
+
 class BrainRetriever:
     """Queries the personality graph at runtime."""
 
     def search(self, query: str, graph: dict, trust_level: str = "owner", brain_power: str = "standard") -> dict:
-        """Search the brain for relevant nodes/edges."""
+        """Search the brain for relevant nodes/edges.
+
+        Returns ``nodes`` (query-scored), ``edges`` (anchored to the
+        nodes — see :func:`_search_edges` for the result-anchored
+        scoring rationale), a human-readable ``context`` string
+        (top-N nodes truncated by brain_power), and ``total_matches``.
+        """
         nodes = _search_nodes(graph, query, trust_level)
+        # Edge search runs against the FULL pre-truncation node list —
+        # an edge that connects two concepts the agent cares about
+        # is useful even when the agent has limited brain_power for
+        # the context string. The edge cap is applied inside
+        # _search_edges, not by reusing the context truncation.
+        result_names = {n["name"] for n in nodes if n.get("name")}
+        edges = _search_edges(graph, query, result_names, brain_power)
         context = _format_context(nodes, graph, brain_power)
 
         return {
             "nodes": nodes,
-            "edges": [],  # Edge search not yet implemented
+            "edges": edges,
             "context": context,
             "total_matches": len(nodes),
         }
