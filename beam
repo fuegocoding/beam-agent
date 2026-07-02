@@ -3,7 +3,7 @@
 Beam Agent CLI launcher.
 
 Single command startup:
-1. First run: setup provider + API key, then run interview to build brain
+1. First run: setup provider + API key, Neo4j (optional), then run interview
 2. Subsequent runs: launch interactive CLI
 """
 
@@ -39,15 +39,141 @@ def _check_api_key() -> bool:
     return False
 
 
+def _check_neo4j() -> bool:
+    """Check if Neo4j is configured (in ~/.hermes/.env)."""
+    env_path = Path.home() / ".hermes" / ".env"
+    if not env_path.exists():
+        return False
+    content = env_path.read_text()
+    return all(
+        f"{key}=" in content
+        for key in ("NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD")
+    )
+
+
 def _check_config() -> bool:
     """Check if beam is configured."""
     return (Path.home() / ".hermes" / "config.yaml").exists()
 
 
 def _check_brain() -> bool:
-    """Check if brain has been built."""
-    brain_path = Path.home() / ".beam" / "brain" / "default" / "personality_graph.json"
-    return brain_path.exists() and brain_path.stat().st_size > 50
+    """Check if ANY brain is available — either the default offline
+    brain OR an installed marketplace brain.
+
+    Marketplace brains live at ``~/.beam/brains/<name>/`` (any
+    subdirectory with a non-empty ``personality_graph.json`` counts).
+    The default offline brain lives at ``~/.beam/brain/default/``.
+    """
+    # Default offline brain
+    default_brain = Path.home() / ".beam" / "brain" / "default" / "personality_graph.json"
+    if default_brain.exists() and default_brain.stat().st_size > 50:
+        return True
+    # Any installed marketplace brain
+    brains_root = Path.home() / ".beam" / "brains"
+    if brains_root.exists():
+        for brain_dir in brains_root.iterdir():
+            if not brain_dir.is_dir():
+                continue
+            graph = brain_dir / "personality_graph.json"
+            if graph.exists() and graph.stat().st_size > 50:
+                return True
+    return False
+
+
+def _list_installed_brains() -> list:
+    """Return a list of installed marketplace brain names."""
+    brains_root = Path.home() / ".beam" / "brains"
+    if not brains_root.exists():
+        return []
+    out = []
+    for brain_dir in sorted(brains_root.iterdir()):
+        if not brain_dir.is_dir():
+            continue
+        graph = brain_dir / "personality_graph.json"
+        if graph.exists() and graph.stat().st_size > 50:
+            out.append(brain_dir.name)
+    return out
+
+
+def _offer_marketplace_brain() -> bool:
+    """Ask the user if they want to install a marketplace brain instead
+    of running the interview. Returns True if a brain was installed.
+    """
+    # The full marketplace catalog (mirror of the README table).
+    # Used as the recommended default and as a fallback if the
+    # marketplace API is unreachable.
+    MARKETPLACE_CATALOG = [
+        ("bill-gates", "Bill Gates — technologist, philanthropist"),
+        ("elon-musk", "Elon Musk — engineer, entrepreneur (Tesla/SpaceX)"),
+        ("marcus-aurelius", "Marcus Aurelius — Roman emperor, Stoic philosopher"),
+        ("seneca", "Seneca — Roman Stoic philosopher, tutor to Nero"),
+        ("terence-tao", "Terence Tao — Fields Medalist mathematician"),
+        ("albert-einstein", "Albert Einstein — theoretical physicist"),
+        ("benjamin-franklin", "Benjamin Franklin — founding father, scientist"),
+        ("virginia-woolf", "Virginia Woolf — modernist novelist, feminist"),
+        ("leonardo-da-vinci", "Leonardo da Vinci — Renaissance polymath"),
+    ]
+
+    # Check what's already installed — don't recommend one they have
+    already_installed = set(_list_installed_brains())
+    # Default = first brain in the catalog that's NOT already installed
+    available = [s for s, _ in MARKETPLACE_CATALOG if s not in already_installed]
+    default_slug = available[0] if available else MARKETPLACE_CATALOG[0][0]
+
+    # If the user already has all 9 brains, skip the marketplace prompt
+    if not available:
+        print("\nYou already have all marketplace brains installed.")
+        print("Skipping marketplace step — falling through to the interview.")
+        return False
+
+    print("\n" + "=" * 60)
+    print("  Two ways to get a brain")
+    print("=" * 60)
+    print()
+    print("  1. Build your own (15-25 min interview)")
+    print("       Beam asks you ~19 questions about your personality,")
+    print("       values, work style, etc. and builds a brain from your")
+    print("       answers. Run with: beam interview --adaptive")
+    print()
+    print("  2. Install a pre-built personality (~5 sec download)")
+    print("       Pick from 9 marketplace brains. Fully offline after install.")
+    print("       Browse: https://openbeam.me/marketplace")
+    print()
+
+    answer = input("Install a marketplace brain? [Y/n]: ").strip().lower()
+    if answer in ("n", "no"):
+        return False
+
+    # Show the full catalog with short descriptions
+    print()
+    print("Available brains:")
+    for slug, desc in MARKETPLACE_CATALOG:
+        marker = "  ✓ INSTALLED" if slug in already_installed else ""
+        print(f"  {slug:20s} {desc}{marker}")
+    print()
+    print(f"Recommended: {default_slug} (not yet installed)")
+    print()
+
+    slug = input(f"Slug [{default_slug}]: ").strip() or default_slug
+
+    # Delegate to cmd_install
+    try:
+        from hermes_cli.install_cmd import cmd_install
+        import argparse
+        args = argparse.Namespace(
+            brain=slug,
+            no_activate=False,
+            list_only=False,
+        )
+        result = cmd_install(args)
+        return result == 0
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        return False
+    except Exception as e:
+        print(f"\nInstall failed: {e}")
+        print(f"Try manually: beam install {slug}")
+        return False
 
 
 def _run_setup():
@@ -120,9 +246,83 @@ display:
     return True
 
 
+def _run_neo4j_setup():
+    """Interactive Neo4j setup — required for the build-your-own-brain
+    path (beam interview --adaptive, platform-search, etc.).
+
+    This is part of the initial flow because the auto-ingest on
+    ``beam install`` silently no-ops without it, and users hit
+    confusing "no facts found" errors downstream.
+    """
+    print("\n" + "=" * 60)
+    print("  Neo4j setup (for the build-your-own-brain path)")
+    print("=" * 60)
+    print()
+    print("Beam can store your brain's knowledge graph in Neo4j, which")
+    print("enables:")
+    print("  - beam interview --adaptive    (LLM-powered adaptive interview)")
+    print("  - beam brain platform-search   (semantic search over the graph)")
+    print("  - beam brain platform-ingest    (ingest files into the graph)")
+    print("  - beam brain platform-export   (JSON-LD, Claude, Obsidian exports)")
+    print()
+    print("Without Neo4j, you can still use marketplace brains (offline)")
+    print("and the deterministic scripted interview.")
+    print()
+    print("Three deployment options:")
+    print("  1. Neo4j Aura (managed cloud, free tier) — RECOMMENDED")
+    print("       Sign up: https://neo4j.com/cloud/aura/")
+    print()
+    print("  2. Neo4j Desktop (local GUI)")
+    print("       Download: https://neo4j.com/download/")
+    print()
+    print("  3. Local Docker")
+    print("       docker run -p 7687:7687 -p 7474:7474 \\")
+    print("         -e NEO4J_AUTH=neo4j/password neo4j")
+    print()
+
+    # Check if graphiti-core is installed
+    try:
+        import graphiti_core  # noqa: F401
+    except ImportError:
+        print("⚠  graphiti-core is not installed in this Python environment.")
+        print()
+        print("   To use brain_platform with Neo4j, install the graphiti-core")
+        print("   extra. Pick ONE of:")
+        print()
+        print("     pip install 'beam-agent[brain-platform-graph]'")
+        print("     pip install 'beam-agent[brain-platform]'   # full meta-extra")
+        print("     pip install 'beam-agent[all]'              # everything")
+        print()
+        print("   You can skip this step now and run setup-neo4j later")
+        print("   after installing.")
+        print()
+        return False
+
+    answer = input("Set up Neo4j now? [Y/n/skip]: ").strip().lower()
+    if answer in ("n", "no", "skip"):
+        print()
+        print("Skipped. You can set this up later with: beam brain setup-neo4j")
+        return False
+
+    # Delegate to the brain_platform wizard
+    try:
+        from brain_platform.cli.integration import cmd_setup_neo4j
+        import argparse
+        args = argparse.Namespace()
+        result = cmd_setup_neo4j(args)
+        return result == 0
+    except KeyboardInterrupt:
+        print("\nSkipped. You can set this up later with: beam brain setup-neo4j")
+        return False
+    except Exception as e:
+        print(f"\nNeo4j setup failed: {e}")
+        print("You can set this up later with: beam brain setup-neo4j")
+        return False
+
+
 def _run_first_time():
-    """Full first-time experience: setup → interview."""
-    # Step 1: Setup
+    """Full first-time experience: API key → Neo4j → interview."""
+    # Step 1: API key
     if not _check_api_key():
         success = _run_setup()
         if not success:
@@ -131,30 +331,42 @@ def _run_first_time():
         print("\n☄ Beam Agent")
         print("API key found. Let's build your digital clone.\n")
 
+    # Step 2: Neo4j (optional but recommended for the build path)
+    if not _check_neo4j():
+        _run_neo4j_setup()
+
     # Ensure directories exist
     beam_home = Path.home() / ".beam"
     beam_home.mkdir(parents=True, exist_ok=True)
     (beam_home / "brain" / "default").mkdir(parents=True, exist_ok=True)
     (beam_home / "memory" / "default").mkdir(parents=True, exist_ok=True)
 
-    # Step 2: Interview (if brain not built)
+    # Step 3: If no brain yet, offer the user a choice between
+    # building their own (interview) or installing a marketplace brain.
+    # Previously this forced the interview, which surprised users
+    # who wanted to use a pre-built personality.
     if not _check_brain():
-        print("Your brain hasn't been built yet.")
-        print("Starting the interview to create your digital clone...\n")
-
-        # Import and run interview directly
-        try:
-            from hermes_cli.main import cmd_interview
-            import argparse
-            args = argparse.Namespace()
-            cmd_interview(args)
-        except KeyboardInterrupt:
-            print("\nInterview interrupted. Run 'beam interview' to continue later.")
-        except Exception as e:
-            print(f"\nInterview error: {e}")
-            print("Run 'beam interview' to try again.")
+        installed = _offer_marketplace_brain()
+        if not installed:
+            print("\nYour brain hasn't been built yet.")
+            print("Starting the interview to create your digital clone...\n")
+            try:
+                from hermes_cli.main import cmd_interview
+                import argparse
+                args = argparse.Namespace()
+                cmd_interview(args)
+            except KeyboardInterrupt:
+                print("\nInterview interrupted. Run 'beam interview' to continue later.")
+            except Exception as e:
+                print(f"\nInterview error: {e}")
+                print("Run 'beam interview' to try again.")
     else:
-        print("Brain found. Launching Beam...\n")
+        installed = _list_installed_brains()
+        if installed:
+            print(f"\nActive brain: {installed[0]} (marketplace). Launching Beam...")
+        else:
+            print("Brain found. Launching Beam...")
+        print()
         _launch_cli()
 
 

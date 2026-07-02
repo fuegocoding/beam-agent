@@ -6,13 +6,40 @@ Usage:
 
 All marketplace brains are free. The full personality_graph.json is
 downloaded once and stored locally at ~/.beam/brains/<name>/personality_graph.json.
+
+If Neo4j is configured (via ``beam brain setup-neo4j``), the brain
+is auto-ingested into Neo4j on install so ``beam brain platform-search``
+and the agent's GraphBackedBrainRetriever work against the same brain
+without a separate ingest step.
 All queries run offline against the local file.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
 import httpx
+
+
+def _is_neo4j_configured() -> bool:
+    """True if the user has set up Neo4j creds (in process env or ~/.hermes/.env).
+
+    Used by ``beam install`` to decide whether to auto-ingest the
+    marketplace brain into Neo4j. If Neo4j isn't configured, the
+    install just leaves the JSON on disk for offline use.
+    """
+    for var in ("NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"):
+        if os.environ.get(var):
+            return True
+    # Fall back to ~/.hermes/.env (where setup-neo4j writes the creds)
+    try:
+        from hermes_cli.config import load_env
+        env = load_env()
+        if env.get("NEO4J_URI") and env.get("NEO4J_USER") and env.get("NEO4J_PASSWORD"):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 API_URL_DEFAULT = "https://api.openbeam.me"
@@ -50,12 +77,99 @@ def _parse_slug(raw_slug: str) -> tuple[str, str]:
         return raw_slug, raw_slug
 
 
-def _download_brain(slug: str, output_path: Path) -> dict:
-    """Install a brain from the marketplace.
+def _is_local_file(slug: str) -> bool:
+    """True if ``slug`` is a path to an existing local file.
 
-    Downloads the full personality_graph.json via the public download
-    endpoint. No auth required — all marketplace brains are free.
+    Used by cmd_install to detect when the user is installing a brain
+    they downloaded (e.g. from GitHub) rather than fetching from the
+    marketplace. Supports absolute paths, ~/ expansion, and relative
+    paths. Only counts as a local file if the file actually exists —
+    a typo in a slug like ``bill-gattes`` won't be mistaken for a file.
     """
+    if not slug:
+        return False
+    if slug.startswith("@") or slug.startswith("http://") or slug.startswith("https://"):
+        return False
+    try:
+        p = Path(slug).expanduser()
+        return p.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _install_name_from_file(path: Path) -> str:
+    """Derive a sensible brain install name from a file path.
+
+    ``/Users/alice/Downloads/bill.json`` -> ``bill``
+    ``/tmp/some-brain-v2.jsonld`` -> ``some-brain-v2``
+    """
+    stem = path.stem
+    # Strip common suffixes that aren't part of the name
+    for suffix in (".brain", ""):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)] if suffix else stem
+    return stem or "brain"
+
+
+def _read_brain_file(path: Path) -> dict:
+    """Read a brain file from disk and validate it's a BrainFile.
+
+    Raises ValueError with a clear message if the file is malformed
+    or not a valid BrainFile (wrong schema_version, missing required
+    fields, etc.).
+    """
+    from brain_platform.pipeline.brain_file.schema import BrainFileSchema
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"File is not valid JSON: {e}")
+
+    # Pydantic v2 validates on instantiation; this gives a clear
+    # error message with the specific field that failed.
+    try:
+        BrainFileSchema.model_validate(data)
+    except Exception as e:
+        # Include a short summary of the file so the user can verify
+        # they're pointing at the right thing.
+        top_keys = list(data.keys())[:5] if isinstance(data, dict) else []
+        raise ValueError(
+            f"File is not a valid BrainFile (top-level keys: {top_keys}). "
+            f"Expected a BrainFileSchema v2.2.0 JSON. Validation error: {e}"
+        )
+
+    return data
+
+
+def _download_brain(slug: str, output_path: Path) -> dict:
+    """Install a brain from the marketplace OR from a local file.
+
+    Two modes:
+    - Local file (slug is a path to an existing .json): reads from
+      disk and validates against BrainFileSchema.
+    - Marketplace slug (default): downloads from the marketplace API.
+
+    Both modes produce the same on-disk format: personality_graph.json
+    in the brain's directory.
+    """
+    if _is_local_file(slug):
+        # Local file install — someone downloaded a brain from GitHub
+        # or a personal site and wants to install it. Validate the
+        # format before writing to disk.
+        source_path = Path(slug).expanduser().resolve()
+        try:
+            graph_data = _read_brain_file(source_path)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            print(f"  (file: {source_path})", file=sys.stderr)
+            sys.exit(1)
+        output_path.mkdir(parents=True, exist_ok=True)
+        graph_path = output_path / "personality_graph.json"
+        graph_path.write_text(json.dumps(graph_data, indent=2), encoding="utf-8")
+        return graph_data
+
+    # Marketplace install — fetch from the API.
     api_url = _get_api_url()
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -80,6 +194,45 @@ def _download_brain(slug: str, output_path: Path) -> dict:
     return graph_data
 
 
+# The full marketplace catalog. Mirrors openbeam.me/marketplace.
+# Used by `beam install` (no args) for the interactive picker and by
+# `beam install --list` to show what's available.
+MARKETPLACE_CATALOG = [
+    ("bill-gates", "Bill Gates", "technologist, philanthropist (Microsoft)"),
+    ("elon-musk", "Elon Musk", "engineer, entrepreneur (Tesla, SpaceX)"),
+    ("marcus-aurelius", "Marcus Aurelius", "Roman emperor, Stoic philosopher"),
+    ("seneca", "Seneca", "Roman Stoic philosopher, tutor to Nero"),
+    ("terence-tao", "Terence Tao", "Fields Medalist mathematician"),
+    ("albert-einstein", "Albert Einstein", "theoretical physicist"),
+    ("benjamin-franklin", "Benjamin Franklin", "founding father, scientist"),
+    ("virginia-woolf", "Virginia Woolf", "modernist novelist, feminist"),
+    ("leonardo-da-vinci", "Leonardo da Vinci", "Renaissance polymath"),
+]
+
+
+def _print_catalog(installed: set = None) -> None:
+    """Print the marketplace catalog, marking already-installed brains."""
+    installed = installed or set()
+    print("\nMarketplace brains:")
+    for slug, name, desc in MARKETPLACE_CATALOG:
+        marker = "  ✓ INSTALLED" if slug in installed else ""
+        print(f"  {slug:20s} {name:18s} — {desc}{marker}")
+    print(f"\nBrowse: https://openbeam.me/marketplace")
+
+
+def _interactive_pick(installed: set) -> str:
+    """Show catalog + ask the user to pick a slug. Returns the chosen slug."""
+    print()
+    _print_catalog(installed)
+    available = [s for s, _, _ in MARKETPLACE_CATALOG if s not in installed]
+    if not available:
+        print("\nYou already have all marketplace brains installed.")
+        return ""
+    default = available[0]
+    print()
+    return input(f"Slug [{default}]: ").strip() or default
+
+
 def cmd_install(args):
     """Handle 'beam install' command."""
     from brain.paths import (
@@ -93,16 +246,37 @@ def cmd_install(args):
     # Parse arguments
     raw_slug = getattr(args, "slug", None)
     no_activate = getattr(args, "no_activate", False)
+    list_only = getattr(args, "list_only", False)
 
+    # `beam install --list` — just show the catalog
+    if list_only:
+        installed = {b["name"] for b in list_brains()}
+        _print_catalog(installed)
+        return 0
+
+    # `beam install` (no args) — interactive picker
     if not raw_slug:
-        print("Usage: beam install <slug> [--no-activate]", file=sys.stderr)
-        print("\nExamples:")
-        print("  beam install creative-writer          # Official brain")
-        print("  beam install @alice/coach              # Community brain")
-        sys.exit(1)
+        try:
+            installed = {b["name"] for b in list_brains()}
+            raw_slug = _interactive_pick(installed)
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return 1
+        if not raw_slug:
+            # User has all brains, or cancelled
+            return 1
 
-    # Parse slug
-    display_slug, install_name = _parse_slug(raw_slug)
+    # Parse slug OR detect local file. A local file path takes
+    # precedence over the slug parser (so /Users/.../bill.json
+    # doesn't get mangled by the @-community parser).
+    if _is_local_file(raw_slug):
+        source_path = Path(raw_slug).expanduser().resolve()
+        display_slug = f"file:{source_path.name}"
+        install_name = _install_name_from_file(source_path)
+        print(f"Installing brain from local file: {source_path}")
+    else:
+        display_slug, install_name = _parse_slug(raw_slug)
+        print(f"Installing brain '{display_slug}'...")
 
     # Check if already installed
     brains = list_brains()
@@ -115,11 +289,26 @@ def cmd_install(args):
     # Ensure directories exist
     ensure_beam_dirs()
 
-    # Download
-    print(f"Installing brain '{display_slug}'...")
+    # Download (or copy from local file). _download_brain needs the
+    # original input (raw_slug) so it can detect the local-file path
+    # itself — display_slug is just a label like "file:brain.json".
     brain_path = get_brain_path(install_name)
 
-    _download_brain(display_slug, brain_path)
+    try:
+        graph_data = _download_brain(raw_slug, brain_path)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        # _download_brain already prints a clear error and exits — but
+        # if anything else goes wrong, surface it here without crashing.
+        print(f"Install failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"Try again, or install manually from https://openbeam.me/marketplace")
+        sys.exit(1)
+
+    # Show what was downloaded
+    size_kb = (brain_path / "personality_graph.json").stat().st_size / 1024
+    node_count = len(graph_data.get("knowledge_graph", {}).get("nodes", []))
+    print(f"  Downloaded: {size_kb:.1f} KB, {node_count} nodes")
 
     # Determine source type
     if raw_slug.startswith("@"):
@@ -146,21 +335,65 @@ def cmd_install(args):
     print(f"  Type: Local (full brain, works offline)")
     print(f"  Path: {brain_path / 'personality_graph.json'}")
 
+    # If Neo4j is configured, auto-ingest the brain into Neo4j so
+    # `beam brain platform-search` works against the same brain
+    # without a separate `platform-ingest` step. This is what makes
+    # the marketplace brain immediately queryable via the agent's
+    # GraphBackedBrainRetriever.
+    if not no_activate and _is_neo4j_configured():
+        try:
+            from brain_platform.cli.integration import _ingest_brain_file_json
+            graph_path = brain_path / "personality_graph.json"
+            if graph_path.exists():
+                _ingest_brain_file_json(graph_path, install_name)
+                print(f"  Neo4j: ingested into group '{install_name}' (Neo4j-backed search is now live)")
+        except Exception as exc:
+            # Don't fail the install if Neo4j ingest fails — the
+            # marketplace brain is still usable offline. Just log it.
+            print(f"  Neo4j: auto-ingest failed ({type(exc).__name__}). "
+                  f"Run 'beam brain platform-ingest {graph_path}' manually.")
+
+    # Eagerly materialize ~/.hermes/SOUL.md from the newly-installed
+    # brain so the next `beam` launch already has the new identity in
+    # place. Without this the user has to wait for the
+    # on_session_start hook to fire (which only handles a few edge
+    # cases — see plugins/brain-tools/_on_session_start).
+    if not no_activate:
+        try:
+            from hermes_cli.brain_cmds import _regenerate_soul
+            _regenerate_soul(install_name)
+            print(f"  SOUL.md regenerated for '{install_name}'.")
+        except Exception as exc:
+            print(f"  Warning: Could not regenerate SOUL.md: {exc}", file=sys.stderr)
+
+    return 0
+
 
 def register_install_command(subparsers):
     """Register the 'install' subcommand with argparse."""
     parser = subparsers.add_parser(
         "install",
         help="Install a brain from the Beam marketplace",
-        description="Install pre-built brains from the marketplace.",
+        description=(
+            "Install pre-built brains from the marketplace. "
+            "Run without arguments for an interactive picker, "
+            "or use --list to see available brains."
+        ),
     )
     parser.add_argument(
         "slug",
+        nargs="?",  # optional — interactive picker if omitted
         help="Brain slug (e.g., 'creative-writer' or '@alice/coach')",
     )
     parser.add_argument(
         "--no-activate",
         action="store_true",
         help="Don't set as active brain after install",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_only",
+        help="List available marketplace brains and exit",
     )
     parser.set_defaults(func=cmd_install)

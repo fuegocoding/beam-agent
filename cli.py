@@ -7905,14 +7905,24 @@ class HermesCLI:
         else:
             _cprint(f"  ✓ Switched to brain '{name}'.")
 
-        # SOUL.md is the prompt fragment the agent reads; without regenerating
-        # it, the new brain's personality is invisible to the model until
-        # the next session.
+        # SOUL.md is the prompt fragment the agent reads. We regenerate it
+        # AND invalidate the agent's cached system prompt so the new
+        # brain's personality shows up in the very next turn instead of
+        # waiting for the next session.
         try:
             _regenerate_soul(name)
             _cprint(f"    SOUL.md regenerated.")
         except Exception as exc:
             _cprint(f"    ⚠ Could not regenerate SOUL.md: {exc}")
+
+        # Drop the cached system prompt so the next LLM call rebuilds it
+        # with the freshly-written SOUL.md. Mirrors the pattern used by
+        # /skills install, /memory, and the resume flow.
+        if getattr(self, "agent", None) is not None and hasattr(self.agent, "_invalidate_system_prompt"):
+            try:
+                self.agent._invalidate_system_prompt()
+            except Exception as exc:
+                _cprint(f"    ⚠ Could not invalidate agent system prompt: {exc}")
 
         # Invalidate any cached status-bar / banner fragments that baked in
         # the previous brain name.

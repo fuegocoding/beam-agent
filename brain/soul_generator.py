@@ -38,37 +38,126 @@ def generate_soul_md(graph: dict, output_path: Path = None) -> str:
 
 
 def _template_soul(graph: dict) -> str:
-    """Generate SOUL.md from template — no LLM."""
+    """Generate SOUL.md from template — no LLM.
+
+    Walks the schema-agnostic node list from
+    :mod:`brain.schema_adapter`, so marketplace brains
+    (``personality_profile`` / ``knowledge_graph`` /
+    ``knowledge_domains`` / ``episodic_memories``) produce a rich
+    SOUL.md instead of an empty stub. Legacy-schema brains continue
+    to render in the original section order.
+    """
+    from brain.schema_adapter import iter_nodes
+
     lines = ["# Soul\n"]
 
     if graph.get("user_summary"):
         lines.append(f"## Who I Am\n\n{graph['user_summary']}\n")
 
-    if graph.get("traits"):
+    # Cache nodes once — we use the same list to populate multiple
+    # sections and to detect when a marketplace graph is the source.
+    nodes = list(iter_nodes(graph))
+
+    def _by_type(node_type: str):
+        return [n for n in nodes if n.get("type") == node_type and n.get("summary")]
+
+    def _render_list(items, score_attr: str, score_label: str | None = None) -> list[str]:
+        out: list[str] = []
+        for it in items:
+            name = it.get("name", "?")
+            summary = it.get("summary", "")
+            score = it.get(score_attr) if score_attr else None
+            if score is not None and score_label:
+                out.append(f"- **{name}** ({score_label} {score:.0%}): {summary}")
+            else:
+                out.append(f"- **{name}**: {summary}")
+        return out
+
+    trait_items = _by_type("trait")
+    if trait_items:
         lines.append("## Core Traits\n")
-        for t in graph["traits"]:
-            if isinstance(t, dict):
-                lines.append(f"- **{t.get('name', '?')}** ({t.get('strength', 0.5):.0%}): {t.get('summary', '')}")
-            else:
-                lines.append(f"- {t}")
+        # Prefer "strength" but fall back to "confidence" (marketplace
+        # uses confidence for trait-like nodes in personality_profile).
+        scored = [t for t in trait_items if "strength" in t]
+        unscored = [t for t in trait_items if "strength" not in t]
+        scored_sorted = sorted(
+            scored,
+            key=lambda t: t.get("strength", 0),
+            reverse=True,
+        )[:10]
+        unscored_sorted = unscored[:5]
+        lines.extend(_render_list(scored_sorted, "strength", "strength"))
+        lines.extend(_render_list(unscored_sorted, "confidence", "strength"))
         lines.append("")
 
-    if graph.get("values"):
+    value_items = _by_type("value")
+    if value_items:
         lines.append("## Values\n")
-        for v in graph["values"]:
-            if isinstance(v, dict):
-                lines.append(f"- **{v.get('name', '?')}** ({v.get('importance', 0.5):.0%}): {v.get('summary', '')}")
-            else:
-                lines.append(f"- {v}")
+        scored = [v for v in value_items if "importance" in v]
+        unscored = [v for v in value_items if "importance" not in v]
+        scored_sorted = sorted(
+            scored,
+            key=lambda v: v.get("importance", 0),
+            reverse=True,
+        )[:8]
+        unscored_sorted = unscored[:5]
+        lines.extend(_render_list(scored_sorted, "importance", "importance"))
+        lines.extend(_render_list(unscored_sorted, "confidence", "importance"))
         lines.append("")
 
-    if graph.get("beliefs"):
+    belief_items = _by_type("belief")
+    if belief_items:
         lines.append("## Beliefs\n")
-        for b in graph["beliefs"]:
-            if isinstance(b, dict):
-                lines.append(f"- **{b.get('name', '?')}** ({b.get('confidence', 0.5):.0%}): {b.get('summary', '')}")
-            else:
-                lines.append(f"- {b}")
+        scored = [b for b in belief_items if "confidence" in b]
+        unscored = [b for b in belief_items if "confidence" not in b]
+        scored_sorted = sorted(
+            scored,
+            key=lambda b: b.get("confidence", 0),
+            reverse=True,
+        )[:8]
+        unscored_sorted = unscored[:5]
+        lines.extend(_render_list(scored_sorted, "confidence", "confidence"))
+        lines.extend(_render_list(unscored_sorted, None))
+        lines.append("")
+
+    # Memory + transcript excerpts — these are usually long; cap to
+    # the top 5 to keep SOUL.md from blowing past the agent's
+    # 20,000-char context-file limit.
+    memory_items = _by_type("memory")[:5]
+    if memory_items:
+        lines.append("## Memorable Context\n")
+        for m in memory_items:
+            tone = m.get("emotional_tone", 0.0)
+            tone_str = f" (tone {tone:+.2f})" if tone else ""
+            summary = m.get("summary", "")
+            # Truncate to ~400 chars to keep this section bounded.
+            if len(summary) > 400:
+                summary = summary[:397] + "..."
+            lines.append(f"- **{m.get('name', 'memory')}**{tone_str}: {summary}")
+        lines.append("")
+
+    # Knowledge domains from the marketplace schema — high-signal
+    # summaries that describe the brain's areas of expertise.
+    expertise_items = _by_type("expertise")
+    if expertise_items and any(graph.get("knowledge_domains")):
+        lines.append("## Areas of Expertise\n")
+        scored = [e for e in expertise_items if "depth" in e]
+        unscored = [e for e in expertise_items if "depth" not in e]
+        scored_sorted = sorted(
+            scored,
+            key=lambda e: e.get("depth", 0),
+            reverse=True,
+        )[:8]
+        unscored_sorted = unscored[:5]
+        for e in scored_sorted:
+            sources = e.get("source_count")
+            suffix = f" ({sources} sources)" if isinstance(sources, int) and sources else ""
+            lines.append(
+                f"- **{e.get('name', '?')}** (depth {e.get('depth', 0):.0%}){suffix}: "
+                f"{e.get('summary', '')}"
+            )
+        for e in unscored_sorted:
+            lines.append(f"- **{e.get('name', '?')}**: {e.get('summary', '')}")
         lines.append("")
 
     voice = graph.get("voice_dna", {})
@@ -82,6 +171,80 @@ def _template_soul(graph: dict) -> str:
             lines.append(f"- Formality: {voice['formality_range']}")
         if voice.get("characteristic_phrases"):
             lines.append(f"- Phrases I use: {', '.join(voice['characteristic_phrases'])}")
+        if voice.get("filler_words"):
+            lines.append(f"- Filler words: {', '.join(voice['filler_words'])}")
+        lines.append("")
+
+    behavioral = graph.get("behavioral_rules", [])
+    if isinstance(behavioral, list) and behavioral:
+        lines.append("## How I Behave\n")
+        for rule in behavioral[:8]:
+            if not isinstance(rule, dict):
+                continue
+            trigger = rule.get("trigger", "")
+            response = rule.get("response", "")
+            if not trigger or not response:
+                continue
+            line = f"- When {trigger}: {response}"
+            if rule.get("exceptions"):
+                line += f" (except {rule['exceptions']})"
+            lines.append(line)
+        lines.append("")
+
+    contradictions = graph.get("contradiction_patterns", [])
+    if isinstance(contradictions, list) and contradictions:
+        lines.append("## What I Push Back On\n")
+        for c in contradictions[:6]:
+            if not isinstance(c, dict):
+                continue
+            topic = c.get("topic", "")
+            stance = c.get("stance", "")
+            if not topic or not stance:
+                continue
+            line = f"- **{topic}**: {stance}"
+            if c.get("how_they_push_back"):
+                line += f" — {c['how_they_push_back']}"
+            lines.append(line)
+        lines.append("")
+
+    triggers = graph.get("emotional_triggers", [])
+    if isinstance(triggers, list) and triggers:
+        lines.append("## What Reaches Me\n")
+        for t in triggers[:8]:
+            if not isinstance(t, dict):
+                continue
+            stimulus = t.get("trigger", "")
+            emotion = t.get("emotion", "")
+            if not stimulus or not emotion:
+                continue
+            intensity = t.get("intensity", 0.5)
+            try:
+                intensity_str = f" ({intensity:.0%})" if isinstance(intensity, (int, float)) else ""
+            except (TypeError, ValueError):
+                intensity_str = ""
+            line = f"- {stimulus}{intensity_str} → {emotion}"
+            if t.get("expression"):
+                line += f" — {t['expression']}"
+            lines.append(line)
+        lines.append("")
+
+    moods = graph.get("contextual_moods", [])
+    if isinstance(moods, list) and moods:
+        lines.append("## How I Shift By Context\n")
+        for m in moods[:6]:
+            if not isinstance(m, dict):
+                continue
+            context = m.get("context", "")
+            mood = m.get("mood", "")
+            if not context or not mood:
+                continue
+            extras: list[str] = []
+            for k, label in (("guard_level", "guard"), ("energy_level", "energy")):
+                v = m.get(k)
+                if isinstance(v, (int, float)):
+                    extras.append(f"{label} {v:.0%}")
+            suffix = f" [{', '.join(extras)}]" if extras else ""
+            lines.append(f"- {context}: {mood}{suffix}")
         lines.append("")
 
     work = graph.get("work_dna", {})

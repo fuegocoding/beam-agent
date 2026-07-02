@@ -6598,6 +6598,22 @@ def cmd_brain(args):
     """Manage your digital brain."""
     action = getattr(args, "brain_action", None) or getattr(args, "action", "status")
 
+    # Chunk 4: brain_platform-specific subcommands (Neo4j-backed)
+    if action == "platform-search":
+        from brain_platform.cli.integration import cmd_brain_platform_search
+        return cmd_brain_platform_search(args)
+    if action == "platform-ingest":
+        from brain_platform.cli.integration import cmd_brain_platform_ingest
+        return cmd_brain_platform_ingest(args)
+    if action == "setup-neo4j":
+        from brain_platform.cli.integration import cmd_setup_neo4j
+        return cmd_setup_neo4j(args)
+    if action == "install":
+        # Delegate to hermes_cli.install_cmd — the marketplace installer
+        # already handles auto-ingest into Neo4j, SOUL.md regen, etc.
+        from hermes_cli.install_cmd import cmd_install as _install
+        return _install(args)
+
     if action == "status":
         try:
             import json as _json
@@ -6838,6 +6854,12 @@ Output ONLY valid JSON with this structure:
         from hermes_cli.brain_cmds import cmd_brain_list
         cmd_brain_list()
 
+    elif action == "install":
+        slug = getattr(args, "slug", None)
+        no_activate = getattr(args, "no_activate", False)
+        from hermes_cli.brain_cmds import cmd_brain_install
+        cmd_brain_install(slug, no_activate=no_activate)
+
     elif action == "switch":
         name = getattr(args, "name", None)
         if not name:
@@ -6866,6 +6888,11 @@ Output ONLY valid JSON with this structure:
 
 def cmd_interview(args):
     """Start the adaptive brain-building interview."""
+    # Chunk 4: route --adaptive to brain_platform's LLM-powered path
+    if getattr(args, "adaptive", False):
+        from brain_platform.cli.integration import cmd_interview_adaptive
+        return cmd_interview_adaptive(args)
+
     import sys
     import threading
     import itertools
@@ -16319,6 +16346,32 @@ Examples:
         help="Label for this ingestion (e.g. 'college essay', 'blog post')",
     )
 
+    # beam brain install [slug] — install a marketplace brain
+    install_parser = brain_subparsers.add_parser(
+        "install",
+        help="Install a brain from the marketplace (no arg = interactive picker)",
+        description=(
+            "Install a pre-built brain from https://openbeam.me/marketplace. "
+            "Run without a slug for an interactive picker, or use --list."
+        ),
+    )
+    install_parser.add_argument(
+        "slug",
+        nargs="?",
+        help="Brain slug (e.g., 'bill-gates' or '@alice/coach'). Omit for interactive picker.",
+    )
+    install_parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="Don't set as active brain after install",
+    )
+    install_parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_only",
+        help="List available marketplace brains and exit",
+    )
+
     brain_parser.set_defaults(func=cmd_brain)
 
     # =========================================================================
@@ -16330,6 +16383,17 @@ Examples:
         description="Run a multi-pass personality interview",
     )
     interview_parser.set_defaults(func=cmd_interview)
+
+    # =========================================================================
+    # beam brain_platform commands (Chunk 4 integration)
+    # =========================================================================
+    try:
+        from brain_platform.cli.integration import register_brain_platform_commands
+        register_brain_platform_commands(subparsers)
+    except Exception as _bp_err:
+        # Don't crash CLI registration if brain_platform is partially installed
+        import logging as _logging
+        _logging.getLogger(__name__).debug("brain_platform CLI registration skipped: %s", _bp_err)
 
     # =========================================================================
     # beam install command

@@ -150,6 +150,788 @@ class TestBrainRetriever:
         assert "raw_transcript" in stats["coverage"]
 
 
+class TestMarketplaceSchemaBrain:
+    """Regression tests for marketplace-schema brains.
+
+    api.openbeam.me ships brains in a richer schema
+    (``personality_profile`` / ``knowledge_graph`` /
+    ``knowledge_domains`` / ``episodic_memories``) than the legacy
+    flat schema the in-tree brain_builder produces. Before
+    :mod:`brain.schema_adapter` was introduced, the retriever and
+    SOUL.md generator only read the legacy flat keys, so a downloaded
+    marketplace brain came back as a 582-byte empty persona with zero
+    searchable nodes — the agent had no personality to draw on.
+
+    These tests assert the behavior contract, not specific counts:
+    any marketplace brain (regardless of which historical figure /
+    community author built it) must produce a non-empty search
+    result for a relevant query, populate ``coverage`` with the
+    marketplace keys, and render a SOUL.md that mentions the
+    personality content.
+    """
+
+    @pytest.fixture
+    def marketplace_graph(self):
+        """Minimal marketplace-schema graph (the only fields the
+        schema adapter actually needs). Avoids the full 210 KB
+        Seneca fixture so the test stays fast and the assertions
+        don't depend on which brains happen to be in the catalog
+        today (change-detector trap)."""
+        return {
+            "personality_profile": {
+                "values": [
+                    "Temperance (0.95): Moderation in all things is the path to clarity.",
+                    "Courage (0.90): Face what must be faced, even when afraid.",
+                ],
+                "core_beliefs": [
+                    "Discipline is freedom. (confidence: 0.97) [Letters]",
+                    "Time is the only true wealth. (confidence: 0.92)",
+                ],
+                "cognitive_patterns": [
+                    "First principles: strip a problem to its base before solving.",
+                ],
+                "communication_style": "Direct, plainspoken, occasionally pointed.",
+                "formality": "Low — talks like a craftsman, not a lecturer.",
+                "humor_frequency": "Rare but dry.",
+            },
+            "knowledge_graph": {
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "PersonalityTrait",
+                        "label": "Resilient",
+                        "summary": "Endures hardship without losing focus on the goal.",
+                        "attributes": {"strength": 0.8},
+                    },
+                    {
+                        "id": "n2",
+                        "type": "PersonalityTrait",
+                        "label": "Pragmatic",
+                        "summary": "Picks the working solution over the elegant one.",
+                        "attributes": {"strength": 0.7},
+                    },
+                    {
+                        "id": "n3",
+                        "type": "PersonalityTrait",
+                        "label": "Stoic",
+                        "summary": "Separates what can be controlled from what cannot.",
+                        "attributes": {"strength": 0.6},
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "n1", "target": "n2", "relation": "COMPLEMENTS"},
+                ],
+            },
+            "knowledge_domains": [
+                {
+                    "topic": "Craftsmanship",
+                    "community_summary": "Deep focus on doing the work well, with patience and care.",
+                    "key_entities": ["practice", "patience", "tooling"],
+                    "confidence": 0.9,
+                    "source_count": 7,
+                },
+            ],
+            "episodic_memories": [
+                {
+                    "name": "The forge",
+                    "content": "Spent the night at the forge, hammering a blade that refused to straighten.",
+                    "emotional_tone": 0.4,
+                },
+            ],
+            "voice_dna": {
+                "humor_style": "dry, observational",
+                "response_length_pattern": "concise by default",
+                "characteristic_phrases": ["the work speaks"],
+            },
+        }
+
+    def test_search_hits_personality_profile_value(self, marketplace_graph):
+        """A query matching a ``personality_profile.values`` entry
+        must return a hit — before the schema adapter this returned
+        0 even for an obvious match like 'temperance'."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("temperance", marketplace_graph, "owner", "standard")
+        assert result["total_matches"] >= 1
+        types = {n.get("type") for n in result["nodes"]}
+        assert "value" in types
+
+    def test_search_hits_knowledge_graph_node(self, marketplace_graph):
+        """A query matching a ``knowledge_graph.nodes[*].summary`` must
+        return a hit. Before the schema adapter the retriever only
+        iterated the legacy flat keys and missed this entirely."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("endures hardship", marketplace_graph, "owner", "standard")
+        assert result["total_matches"] >= 1
+        # The fixture node has type=PersonalityTrait which the adapter
+        # canonicalizes to 'trait' so it stays consistent with the
+        # legacy schema's node type vocabulary.
+        assert any(
+            "Resilient" in n.get("name", "") for n in result["nodes"]
+        )
+
+    def test_search_extracts_embedded_score(self, marketplace_graph):
+        """Marketplace values like ``'Temperance (0.95): ...'`` embed
+        the numeric importance in the name string. The adapter must
+        parse it out so the importance field is 0.95, not the 0.5
+        default."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("temperance", marketplace_graph, "owner", "standard")
+        matches = [n for n in result["nodes"] if "Temperance" in n.get("name", "")]
+        assert matches, "expected a Temperance value match"
+        # Score extraction: importance 0.95 should propagate to the
+        # node, not stay at the 0.5 default.
+        assert any(
+            abs(m.get("importance", 0) - 0.95) < 0.01 for m in matches
+        ), f"expected importance 0.95, got nodes: {matches}"
+
+    def test_stats_includes_marketplace_keys(self, marketplace_graph):
+        """``get_stats`` must surface the marketplace-schema node
+        counts via the ``knowledge_graph_nodes``, ``knowledge_domains``,
+        and ``episodic_memories`` coverage keys — without these, the
+        CLI's `brain status` / `brain info` outputs report 0 for any
+        downloaded brain.
+
+        Additionally, legacy keys (traits, beliefs, values, etc.) must
+        now be populated from the adapted node list so marketplace brains
+        do not appear empty."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        stats = retriever.get_stats(marketplace_graph)
+        coverage = stats["coverage"]
+        # Invariant: marketplace brains carry knowledge_graph + domains
+        # + episodic memories; the coverage dict must reflect that
+        # (previously these fields were always 0).
+        assert coverage["knowledge_graph_nodes"] >= 3
+        assert coverage["knowledge_domains"] >= 1
+        assert coverage["episodic_memories"] >= 1
+        # Legacy keys must now count adapted marketplace nodes too.
+        assert coverage["traits"] >= 3
+        assert coverage["beliefs"] >= 2
+        assert coverage["values"] >= 2
+        assert "knowledge_graph_nodes" in coverage
+
+    def test_stats_includes_total_edges(self, marketplace_graph):
+        """``get_stats`` must report ``total_edges`` from both
+        ``knowledge_graph.edges`` and the legacy top-level
+        ``edges`` field. Previously always 0."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        stats = retriever.get_stats(marketplace_graph)
+        assert stats["total_edges"] >= 1
+
+    def test_soul_md_contains_personality_content(self, marketplace_graph):
+        """The template-only SOUL.md generator must produce content
+        drawn from the marketplace schema. Before the fix it emitted
+        a 582-byte stub with only the voice_dna block populated,
+        even when the graph carried 50+ nodes."""
+        from brain.soul_generator import _template_soul
+        soul = _template_soul(marketplace_graph)
+        # Invariant: a marketplace brain with personality_profile +
+        # knowledge_graph + knowledge_domains + voice_dna must
+        # produce a SOUL.md larger than the 582-byte legacy-only
+        # ceiling (which is what `_template_soul` produced when it
+        # only knew about the legacy flat schema — see PR
+        # "brains arent properly injected into the beam agent").
+        LEGACY_ONLY_STUB_CEILING = 600
+        assert len(soul) > LEGACY_ONLY_STUB_CEILING, (
+            f"SOUL.md too small ({len(soul)} chars); legacy-only stub "
+            f"(<= {LEGACY_ONLY_STUB_CEILING} chars) suggests the "
+            f"schema adapter isn't wired up."
+        )
+        # The marketplace value "Temperance" must appear in the
+        # rendered SOUL.md so the model can use it.
+        assert "Temperance" in soul
+        # The knowledge domain "Craftsmanship" must surface — it's
+        # exactly the kind of high-signal data the marketplace adds.
+        assert "Craftsmanship" in soul
+        # The forge episodic memory should also show up in
+        # the "Memorable Context" section.
+        assert "Memorable Context" in soul
+        assert "forge" in soul.lower()
+
+    def test_schema_adapter_legacy_still_works(self, sample_graph):
+        """Adding the marketplace schema path must not break the
+        legacy flat schema. The retriever's node count, type set, and
+        relevance ranking for a query like 'analytical' must remain
+        stable."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("analytical", sample_graph, "owner", "standard")
+        # Legacy invariant: the analytical trait is the top hit.
+        assert result["nodes"][0]["name"] == "analytical"
+        assert result["nodes"][0]["type"] == "trait"
+        assert result["nodes"][0]["relevance"] > 0
+
+    def test_behavioral_rules_surface_as_nodes(self):
+        """The marketplace ``behavioral_rules`` block must surface as
+        ``behavioral_rule`` nodes. These are the trigger→response
+        patterns that define how a person acts — exactly what
+        ``brain_search`` should hit for "how does X approach Y"."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "behavioral_rules": [
+                {
+                    "trigger": "asked to compromise on intellectual honesty",
+                    "response": "refuses firmly but explains why with a specific example",
+                    "exceptions": "",
+                },
+                {
+                    "trigger": "faced with a hard problem",
+                    "response": "breaks it into first principles and starts at the physics",
+                    "exceptions": "never when time is critical",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "behavioral_rule"]
+        assert len(nodes) == 2
+        triggers = {n["name"] for n in nodes}
+        assert "asked to compromise on intellectual honesty" in triggers
+        # The exception clause must propagate into the summary.
+        exception_node = next(
+            n for n in nodes
+            if n["name"] == "faced with a hard problem"
+        )
+        assert "except: never when time is critical" in exception_node["summary"]
+
+    def test_contradiction_patterns_surface_as_nodes(self):
+        """The marketplace ``contradiction_patterns`` block must surface
+        as ``contradiction`` nodes — these are the topics a persona
+        will actively push back on."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "contradiction_patterns": [
+                {
+                    "topic": "luck vs systems",
+                    "stance": "most things people call luck are systems you can learn",
+                    "how_they_push_back": "uses card game examples to show probabilities",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "contradiction"]
+        assert len(nodes) == 1
+        assert nodes[0]["name"] == "luck vs systems"
+        assert "systems you can learn" in nodes[0]["summary"]
+        assert "card game examples" in nodes[0]["summary"]
+
+    def test_emotional_triggers_surface_as_nodes_with_intensity(self):
+        """The marketplace ``emotional_triggers`` block must surface as
+        ``emotional_trigger`` nodes with intensity preserved as
+        ``confidence`` (the retriever's existing score field)."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "emotional_triggers": [
+                {
+                    "trigger": "Something seems impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.95,
+                    "expression": "Becomes laser-focused",
+                    "context": "When an industry says it can't be done",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "emotional_trigger"]
+        assert len(nodes) == 1
+        n = nodes[0]
+        assert n["name"] == "Something seems impossible"
+        assert n["confidence"] == 0.95
+        assert "competitive obsession" in n["summary"]
+        assert "Becomes laser-focused" in n["summary"]
+        # Sensitivity defaults to public; this gates visitor/known trust.
+        # The schema adapter spreads ``extra`` onto the top level of the
+        # node dict via :func:`brain.schema_adapter._make_node`, so
+        # ``sensitivity`` is at the root, not under ``extra``.
+        assert n.get("sensitivity") == "public"
+
+    def test_emotional_trigger_sensitivity_gating(self):
+        """``emotional_trigger`` nodes with ``sensitivity=personal`` must
+        be hidden at trust_level=visitor (mirrors the legacy boundary
+        owner-only filter)."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "emotional_triggers": [
+                {
+                    "trigger": "Public embarrassment",
+                    "emotion": "shame",
+                    "intensity": 0.9,
+                    "sensitivity": "personal",
+                },
+                {
+                    "trigger": "Someone says it is impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.95,
+                    "sensitivity": "public",
+                },
+            ]
+        }
+        retriever = BrainRetriever()
+        # visitor: only public sensitivity shows up
+        visitor_hits = retriever.search("impossible embarrassment", graph, "visitor", "full")["nodes"]
+        visitor_triggers = [n for n in visitor_hits if n["type"] == "emotional_trigger"]
+        trigger_names = {n["name"] for n in visitor_triggers}
+        assert "Someone says it is impossible" in trigger_names
+        assert "Public embarrassment" not in trigger_names
+        # owner: both show
+        owner_hits = retriever.search("impossible embarrassment", graph, "owner", "full")["nodes"]
+        owner_triggers = [n for n in owner_hits if n["type"] == "emotional_trigger"]
+        assert {n["name"] for n in owner_triggers} == {
+            "Someone says it is impossible",
+            "Public embarrassment",
+        }
+
+    def test_contextual_moods_surface_as_nodes(self):
+        """The marketplace ``contextual_moods`` block must surface as
+        ``contextual_mood`` nodes with guard/energy levels."""
+        from brain.schema_adapter import iter_nodes
+
+        graph = {
+            "contextual_moods": [
+                {
+                    "context": "With close family",
+                    "mood": "Quietly competitive, focused, sometimes sharp",
+                    "guard_level": 0.3,
+                    "energy_level": 0.7,
+                    "sensitivity": "personal",
+                },
+            ]
+        }
+        nodes = [n for n in iter_nodes(graph) if n.get("type") == "contextual_mood"]
+        assert len(nodes) == 1
+        n = nodes[0]
+        assert n["name"] == "With close family"
+        assert "Quietly competitive" in n["summary"]
+        assert "guard 30%" in n["summary"]
+        assert "energy 70%" in n["summary"]
+
+    def test_marketplace_edges_normalize_relation_to_edge_type(self):
+        """Marketplace edges use ``relation`` (not ``edge_type``) and
+        reference source/target as UUIDs. The adapter must normalize
+        so the retriever's edge-connector works on either schema."""
+        from brain.schema_adapter import iter_edges
+
+        graph = {
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "n1", "type": "Value", "label": "Equity"},
+                    {"id": "n2", "type": "Belief", "label": "Every life has equal value"},
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "n1",
+                        "target": "n2",
+                        "relation": "ENFORCES",
+                        "fact": "Equity enforces equal-value belief.",
+                        "weight": 1.0,
+                    },
+                ],
+            }
+        }
+        edges = list(iter_edges(graph))
+        assert len(edges) == 1
+        e = edges[0]
+        # relation is preserved for marketplace callers.
+        assert e["relation"] == "ENFORCES"
+        # edge_type populated from relation for legacy callers.
+        assert e["edge_type"] == "ENFORCES"
+        # UUIDs resolved to labels via the node map.
+        assert e["source_name"] == "Equity"
+        assert e["target_name"] == "Every life has equal value"
+        # Original UUIDs preserved.
+        assert e["source"] == "n1"
+        assert e["target"] == "n2"
+
+    def test_marketplace_edges_preserve_legacy_when_both_present(self):
+        """If a marketplace edge already has ``edge_type`` (e.g. a
+        hand-edited brain), the adapter must not clobber it with the
+        ``relation`` value."""
+        from brain.schema_adapter import iter_edges
+
+        graph = {
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "n1", "type": "Value", "label": "X"},
+                    {"id": "n2", "type": "Belief", "label": "Y"},
+                ],
+                "edges": [
+                    {
+                        "source": "n1",
+                        "target": "n2",
+                        "relation": "WRONG_RELATION",
+                        "edge_type": "CORRECT_TYPE",
+                        "fact": "f",
+                    },
+                ],
+            }
+        }
+        edges = list(iter_edges(graph))
+        assert edges[0]["edge_type"] == "CORRECT_TYPE"
+        assert edges[0]["relation"] == "WRONG_RELATION"
+
+    def test_build_context_includes_voice_dna_phrases_and_emotional(self):
+        """``build_context`` should surface voice_dna phrases, filler
+        words, baseline mood, reaction speed, recovery, and energy
+        sources/drains — not just humor + response style. Previously
+        the prompt-time context was 468 chars and dropped most of
+        this rich data."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "personality_profile": {
+                "values": ["Curiosity (0.95): reads about everything"],
+            },
+            "voice_dna": {
+                "humor_style": "dry wit",
+                "response_length_pattern": "short bursts",
+                "formality_range": "casual",
+                "characteristic_phrases": ["the math is the math", "first principles"],
+                "filler_words": ["well", "honestly"],
+            },
+            "emotional_profile": {
+                "baseline_mood": "Intense and restless",
+                "reaction_speed": "Fast when engaged",
+                "recovery_pattern": "Returns to work",
+                "energy_sources": ["solving hard problems"],
+                "energy_drains": ["bureaucracy"],
+            },
+        }
+        retriever = BrainRetriever()
+        ctx = retriever.build_context(graph, "owner", "standard")["context"]
+        assert "the math is the math" in ctx
+        assert "first principles" in ctx
+        assert "Filler words: well, honestly" in ctx
+        assert "Baseline mood: Intense and restless" in ctx
+        assert "Reaction speed: Fast when engaged" in ctx
+        assert "Recovery: Returns to work" in ctx
+        assert "Energy sources: solving hard problems" in ctx
+        assert "Energy drains: bureaucracy" in ctx
+
+    def test_format_context_renders_new_node_types(self, marketplace_graph):
+        """The retriever's per-turn context formatter must render the
+        new node types (behavioral_rule, contradiction,
+        emotional_trigger, contextual_mood) into the context string."""
+        from brain.brain_retriever import BrainRetriever
+
+        graph = {
+            "behavioral_rules": [
+                {
+                    "trigger": "faced with a hard problem",
+                    "response": "breaks it into first principles",
+                }
+            ],
+            "contradiction_patterns": [
+                {"topic": "luck vs systems", "stance": "systems beat luck"},
+            ],
+            "emotional_triggers": [
+                {
+                    "trigger": "Something seems impossible",
+                    "emotion": "competitive obsession",
+                    "intensity": 0.9,
+                }
+            ],
+            "contextual_moods": [
+                {"context": "with close family", "mood": "Quietly focused"},
+            ],
+        }
+        retriever = BrainRetriever()
+        ctx = retriever.build_context(graph, "owner", "full")["context"]
+        # Note: build_context only renders the legacy top-N fields;
+        # _format_context is what the search path uses. We invoke the
+        # formatter directly via a synthesized search result instead.
+        from brain.brain_retriever import _format_context
+        nodes = list(retriever.search("first principles", graph, "owner", "full")["nodes"])
+        for n in nodes:
+            n.pop("relevance", None)
+        # Add a node for each new type by hand (search may not have
+        # scored them; the formatter is what we want to test).
+        from brain.schema_adapter import iter_nodes
+        all_nodes = list(iter_nodes(graph))
+        formatted = _format_context(all_nodes, graph, "full")
+        assert "Behavioral rule" in formatted
+        assert "first principles" in formatted
+        assert "Will push back on" in formatted
+        assert "luck vs systems" in formatted
+        assert "Emotional trigger" in formatted
+        assert "competitive obsession" in formatted
+        assert "In context" in formatted
+        assert "with close family" in formatted
+
+
+class TestEdgeSearch:
+    """Edge search is result-anchored: an edge is only meaningful
+    once its endpoint concepts are already known. These tests pin
+    the scoring model and the brain_power cap.
+    """
+
+    def _graph_with_edges(self):
+        """A graph with both legacy edges and marketplace edges.
+
+        The legacy edge uses ``source_name``/``target_name`` directly;
+        the marketplace edge uses UUIDs that must be resolved to labels
+        by ``iter_edges`` before edge search can anchor them.
+        """
+        return {
+            "traits": [
+                {"name": "analytical", "summary": "thinks in systems"},
+            ],
+            "beliefs": [
+                {"name": "Equity", "summary": "every life has equal value"},
+            ],
+            "edges": [
+                {
+                    "source_name": "analytical",
+                    "target_name": "Equity",
+                    "edge_type": "INFORMS",
+                    "fact": "Analytical thinking informs the equity belief.",
+                },
+            ],
+            "knowledge_graph": {
+                "nodes": [
+                    {"id": "u1", "type": "Value", "label": "Family"},
+                    {"id": "u2", "type": "Belief", "label": "Education matters"},
+                ],
+                "edges": [
+                    {
+                        "id": "m1",
+                        "source": "u1",
+                        "target": "u2",
+                        "relation": "DRIVES",
+                        "fact": "Family drives the education belief strongly.",
+                        "weight": 0.8,
+                    },
+                ],
+            },
+        }
+
+    def test_edge_anchored_to_result_node_surfaces(self):
+        """An edge whose source or target is in the node search results
+        must surface. This is the core contract — edges only mean
+        something when their endpoint concepts are already known."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # The "analytical" trait is in the node result set.
+        result = retriever.search("analytical", self._graph_with_edges(), "owner", "full")
+        edges = result["edges"]
+        assert len(edges) >= 1
+        # The legacy edge (analytical → Equity, INFORMS) surfaces.
+        legacy = [e for e in edges if e["source"] == "analytical"]
+        assert len(legacy) == 1
+        assert legacy[0]["relation"] == "INFORMS"
+        assert "Analytical thinking" in legacy[0]["fact"]
+
+    def test_marketplace_edge_resolves_uuid_to_label(self):
+        """Marketplace edges use UUIDs for source/target. The retriever
+        must resolve those to labels via the knowledge_graph.nodes map
+        before anchoring to result node names."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Query for "Family" — it's a node in the marketplace graph.
+        result = retriever.search("Family", self._graph_with_edges(), "owner", "full")
+        edges = result["edges"]
+        # The marketplace edge Family → Education matters should surface
+        # with its resolved label, not the UUID.
+        m_edges = [e for e in edges if e["source"] == "Family"]
+        assert len(m_edges) == 1
+        assert m_edges[0]["target"] == "Education matters"
+        assert m_edges[0]["relation"] == "DRIVES"
+        assert m_edges[0]["weight"] == 0.8
+
+    def test_edge_unanchored_to_any_result_node_excluded(self):
+        """An edge whose source and target are NEITHER in the result
+        set must be dropped — without a name anchor the agent has no
+        way to ground the relation."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Query for something unrelated to any edge endpoint.
+        result = retriever.search("completely_unrelated_xyz", self._graph_with_edges(), "owner", "full")
+        # No result node names to anchor to -> no edges.
+        assert result["edges"] == []
+
+    def test_edge_missing_resolved_names_skipped(self):
+        """Edges where the UUIDs failed to resolve (no matching node
+        in knowledge_graph.nodes) must be skipped — the schema adapter
+        leaves source_name/target_name empty, so there is nothing to
+        anchor against."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "Known",
+                    "target_name": "Other",
+                    "edge_type": "RELATES_TO",
+                    "fact": "Known relates to Other.",
+                },
+                {
+                    # UUIDs that don't resolve — both source_name/target_name missing.
+                    "source": "ghost-uuid-1",
+                    "target": "ghost-uuid-2",
+                    "relation": "RELATES_TO",
+                    "fact": "Ghost edges should not surface.",
+                },
+            ],
+            "knowledge_graph": {
+                "nodes": [{"id": "real", "type": "Value", "label": "Real"}],
+                "edges": [],
+            },
+        }
+        # result_node_names includes "Known" — only the first edge anchors.
+        edges = _search_edges(graph, "test", {"Known", "Other", "Real"}, "full")
+        assert len(edges) == 1
+        assert edges[0]["source"] == "Known"
+
+    def test_edge_with_both_endpoints_in_results_scores_higher(self):
+        """An edge connecting TWO result nodes describes a relationship
+        the agent has direct context for, so it should score higher
+        than an edge with only one endpoint in the result set."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "Alpha", "target_name": "Beta",
+                    "edge_type": "REL", "fact": "Alpha relates to Beta.",
+                },
+                {
+                    "source_name": "Alpha", "target_name": "Gamma",
+                    "edge_type": "REL", "fact": "Alpha relates to Gamma.",
+                },
+            ],
+        }
+        # Only Alpha in result set: second edge (Beta anchor) wins because
+        # its source is anchored, but the first edge (Gamma) ALSO has
+        # Alpha anchored, so both should surface. The first edge has
+        # BOTH endpoints anchored (Alpha, Beta) -> higher score.
+        edges = _search_edges(graph, "test", {"Alpha", "Beta"}, "full")
+        assert len(edges) == 2
+        # The Beta edge should rank first (both endpoints in results).
+        assert edges[0]["target"] == "Beta"
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_fact_matching_query_boosts_score(self):
+        """When the edge's ``fact`` field contains query words, the
+        edge should score higher than one whose endpoints are anchored
+        but whose fact is unrelated to the query."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "A", "target_name": "B",
+                    "edge_type": "REL", "fact": "completely unrelated prose.",
+                },
+                {
+                    "source_name": "A", "target_name": "C",
+                    "edge_type": "REL", "fact": "Strong education focus on equity.",
+                },
+            ],
+        }
+        edges = _search_edges(graph, "education", {"A", "B", "C"}, "full")
+        # C edge should rank first because its fact matches "education".
+        assert edges[0]["target"] == "C"
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_weight_contributes_to_score(self):
+        """A higher marketplace ``weight`` (graph-writer confidence)
+        should nudge the edge's relevance up."""
+        from brain.brain_retriever import _search_edges
+        graph = {
+            "edges": [
+                {
+                    "source_name": "A", "target_name": "B",
+                    "edge_type": "REL", "fact": "f", "weight": 0.0,
+                },
+                {
+                    "source_name": "A", "target_name": "C",
+                    "edge_type": "REL", "fact": "f", "weight": 1.0,
+                },
+            ],
+        }
+        edges = _search_edges(graph, "test", {"A", "B", "C"}, "full")
+        assert edges[0]["target"] == "C"  # higher weight wins
+        assert edges[0]["relevance"] > edges[1]["relevance"]
+
+    def test_edge_cap_by_brain_power(self):
+        """The edge result is capped by brain_power: light=1,
+        standard=5, full=15. The cap is applied AFTER scoring, so
+        the highest-relevance edges always win the slots."""
+        from brain.brain_retriever import _search_edges
+        # 10 edges, all anchored, all with the same fact (equal base score).
+        graph = {
+            "edges": [
+                {
+                    "source_name": f"A{i}", "target_name": "Z",
+                    "edge_type": "REL", "fact": f"edge {i}",
+                }
+                for i in range(10)
+            ],
+        }
+        names = {f"A{i}" for i in range(10)} | {"Z"}
+        light = _search_edges(graph, "test", names, "light")
+        standard = _search_edges(graph, "test", names, "standard")
+        full = _search_edges(graph, "test", names, "full")
+        assert len(light) == 1
+        assert len(standard) == 5
+        assert len(full) == 10  # only 10 edges exist
+
+    def test_edge_search_uses_full_node_set_not_truncated(self):
+        """Edge search must anchor against the FULL pre-truncation node
+        list, not the brain_power-truncated context. An edge that
+        connects two concepts outside the top-10 still matters."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        # Build a graph where many nodes match the query, but only a
+        # few of them are connected by edges.
+        graph = {
+            "traits": [
+                {"name": f"trait_{i}", "summary": "keyword match"}
+                for i in range(20)
+            ],
+            "edges": [
+                {
+                    "source_name": "trait_15",
+                    "target_name": "trait_18",
+                    "edge_type": "REL",
+                    "fact": "Trait 15 and 18 are linked.",
+                },
+            ],
+        }
+        result = retriever.search("keyword", graph, "owner", "light")
+        # light = brain_power context cap of 3 nodes, but edge search
+        # must still find the edge between trait_15 and trait_18
+        # (both matched by the node search, just not in the top 3).
+        edge_facts = [e["fact"] for e in result["edges"]]
+        assert any("Trait 15 and 18" in f for f in edge_facts)
+
+    def test_search_return_shape_includes_edges_field(self):
+        """BrainRetriever.search must return the structured ``edges``
+        list (not the legacy empty placeholder). The brain_search
+        tool handler in plugins/brain-tools/__init__.py dumps the
+        whole result as JSON, so the agent sees both nodes and edges."""
+        from brain.brain_retriever import BrainRetriever
+        retriever = BrainRetriever()
+        result = retriever.search("analytical", self._graph_with_edges(), "owner", "full")
+        assert "edges" in result
+        assert isinstance(result["edges"], list)
+        # And the legacy field is no longer hard-coded to [].
+        assert result["edges"] != []
+        # Other fields are still present.
+        assert "nodes" in result
+        assert "context" in result
+        assert "total_matches" in result
+
+    def test_edge_search_empty_result_node_names(self):
+        """If the node search returns no names (empty result set or
+        no names field), edge search returns an empty list rather
+        than crashing on the lowercased empty set."""
+        from brain.brain_retriever import _search_edges
+        edges = _search_edges(self._graph_with_edges(), "test", set(), "full")
+        assert edges == []
+
+
 class TestBrainBuilder:
     """Test offline transcript → graph conversion."""
 
@@ -529,3 +1311,67 @@ class TestEndToEndFlow:
             # transcript_excerpt hit for "thoughtful".
             types = {n.get("type") for n in search_result["nodes"]}
             assert types & {"memory", "transcript_excerpt"}
+
+
+class TestBrainInstallMaterializesSoul:
+    """`beam install <slug>` must eagerly regenerate ~/.hermes/SOUL.md
+    from the downloaded marketplace brain so the next session has a
+    populated identity — without this, the user had to wait for the
+    on_session_start hook (which only fires on edge cases) or
+    manually call `brain_export`."""
+
+    def test_cmd_install_writes_soul_md(
+        self, beam_home, hermes_home, marketplace_graph_factory
+    ):
+        import argparse
+        from unittest.mock import MagicMock, patch
+        from hermes_cli import install_cmd
+
+        # Stub the marketplace download so the test doesn't hit the
+        # network. We return a marketplace-schema graph that exercises
+        # the schema adapter end-to-end.
+        fake_resp = MagicMock()
+        fake_resp.json.return_value = marketplace_graph_factory()
+        fake_resp.raise_for_status.return_value = None
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value.get.return_value = fake_resp
+
+        args = argparse.Namespace(slug="creative-writer", no_activate=False)
+
+        with patch("hermes_cli.install_cmd.httpx.Client", return_value=fake_client), \
+             patch("brain.paths.BEAM_HOME", beam_home), \
+             patch("hermes_constants.get_hermes_home", return_value=hermes_home):
+            install_cmd.cmd_install(args)
+
+        soul_path = hermes_home / "SOUL.md"
+        assert soul_path.exists(), "cmd_install should have materialized SOUL.md"
+        soul = soul_path.read_text(encoding="utf-8")
+        # Invariant: the materialized SOUL.md must contain the
+        # marketplace brain's personality content, not just the
+        # legacy-only voice_dna stub.
+        assert "Temperance" in soul or "Courage" in soul, (
+            "marketplace values missing from materialized SOUL.md — "
+            "schema adapter not wired into soul_generator"
+        )
+
+
+@pytest.fixture
+def marketplace_graph_factory():
+    """Factory for a minimal marketplace-schema graph used in install tests."""
+    def _make():
+        return {
+            "personality_profile": {
+                "values": [
+                    "Temperance (0.95): Moderation in all things.",
+                    "Courage (0.90): Face what must be faced.",
+                ],
+                "core_beliefs": [
+                    "Discipline is freedom. (confidence: 0.97)",
+                ],
+            },
+            "voice_dna": {
+                "humor_style": "dry",
+                "response_length_pattern": "concise",
+            },
+        }
+    return _make
