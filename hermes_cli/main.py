@@ -8386,8 +8386,17 @@ def _update_via_zip(args):
             f"--branch {branch}`, or update against main with `beam update`."
         )
         sys.exit(1)
+    # Resolve the source repo. Default to this fork (fuegocoding/beam-agent),
+    # fall back to the upstream NousResearch/hermes-agent if explicitly
+    # requested via $env:BEAM_UPDATE_REPO. Hardcoding NousResearch here is a
+    # fork-overwrite trap: the previous default was upstream-only, which meant
+    # every `beam update` on a fork install silently re-installed the
+    # upstream's hermes_cli code over the fork's, breaking local features and
+    # reintroducing upstream-only bugs. Override via $env:BEAM_UPDATE_REPO=OWNER/REPO
+    # (without the .git suffix) to point at a different fork.
+    update_repo = os.environ.get("BEAM_UPDATE_REPO", "fuegocoding/beam-agent")
     zip_url = (
-        f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+        f"https://github.com/{update_repo}/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
