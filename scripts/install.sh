@@ -69,12 +69,29 @@ fi
 
 # Install
 echo "Installing dependencies..."
-uv tool install -e "$BEAM_DIR" --python 3.12 --force 2>/dev/null || \
-uv tool install -e "$BEAM_DIR" --force 2>/dev/null || \
-uv pip install -e "$BEAM_DIR" --system 2>/dev/null || {
+
+# Drop any prior editable install before re-installing. `uv tool install -e`
+# writes a `__editable___hermes_agent_*.pth` finder that hardcodes the source
+# path; once installed, it survives subsequent `uv tool install --force` calls
+# (the new install lands in the same venv but the .pth still points at the
+# old path). If the install dir ever changes (recovery from a broken install,
+# moving the checkout, running this script against a temp dir for testing),
+# the venv keeps importing from the stale path and `beam update` then tries
+# to operate on the wrong repo. Uninstalling first guarantees a clean
+# re-link. Failures here are non-fatal — a first-time install won't have
+# anything to uninstall, and an uninstall against a missing tool is a no-op.
+uv tool uninstall hermes-agent 2>/dev/null || true
+
+# Non-editable install on purpose. End users don't edit the source; an
+# editable install trades disk space + a fragile .pth pointer for the
+# ability to live-edit the checkout, which is the dev workflow — devs can
+# `uv pip install -e .` inside the clone if they want it.
+uv tool install "$BEAM_DIR" --python 3.12 --force 2>/dev/null || \
+uv tool install "$BEAM_DIR" --force 2>/dev/null || \
+uv pip install "$BEAM_DIR" --system 2>/dev/null || {
     echo "Trying with venv fallback..."
     uv venv .venv --python 3.12 2>/dev/null || uv venv .venv
-    uv pip install -e "$BEAM_DIR" --python .venv
+    uv pip install "$BEAM_DIR" --python .venv
     echo ""
     echo "Add to your PATH: $BEAM_DIR/.venv/bin"
 }

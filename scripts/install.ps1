@@ -81,18 +81,31 @@ if (Test-Path "$BEAM_DIR\.git") {
 Write-Host "Installing dependencies..."
 Set-Location $BEAM_DIR
 $ErrorActionPreference = "Continue"
+
+# Drop any prior editable install before re-installing. `uv tool install -e`
+# writes a `__editable___hermes_agent_*.pth` finder that hardcodes the source
+# path; once installed, it survives subsequent `uv tool install --force` calls
+# (the new install lands in the same venv but the .pth still points at the
+# old path). If the install dir ever changes (recovery from a broken install,
+# moving the checkout, running this script against a temp dir for testing),
+# the venv keeps importing from the stale path and `beam update` then tries
+# to operate on the wrong repo. Uninstalling first guarantees a clean
+# re-link. Failures here are non-fatal -- a first-time install won't have
+# anything to uninstall, and an uninstall against a missing tool is a no-op.
+try { uv tool uninstall hermes-agent 2>&1 | Out-Null } catch {}
+
 try {
-    uv tool install -e $BEAM_DIR --python 3.12 --force 2>&1 | Out-Null
+    uv tool install $BEAM_DIR --python 3.12 --force 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
 } catch {
     try {
-        uv tool install -e $BEAM_DIR --force 2>&1 | Out-Null
+        uv tool install $BEAM_DIR --force 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "uv tool install failed" }
     } catch {
         Write-Host "Trying with venv fallback..."
         uv venv .venv --python 3.12 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { uv venv .venv 2>&1 | Out-Null }
-        uv pip install -e $BEAM_DIR --python .venv 2>&1 | Out-Null
+        uv pip install $BEAM_DIR --python .venv 2>&1 | Out-Null
         Write-Host ""
         Write-Host "Add to your PATH: $BEAM_DIR\.venv\Scripts"
     }
