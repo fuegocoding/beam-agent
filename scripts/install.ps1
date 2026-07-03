@@ -1,28 +1,80 @@
-# Beam Agent — one-line install for Windows PowerShell
-# Usage: iex (irm https://raw.githubusercontent.com/fuegocoding/beam-agent/main/scripts/install.ps1)
+﻿# Beam Agent - one-line install for Windows PowerShell
+#
+# Recommended one-liner (file-based - AMSI scans the file once, not a stream):
+#   irm https://raw.githubusercontent.com/fuegocoding/beam-agent/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1
+#
+# Legacy one-liner (works in non-managed environments; some Defender policies
+# block the `irm | iex` stream pattern. The file-based form above is preferred):
+#   iex (irm https://raw.githubusercontent.com/fuegocoding/beam-agent/main/scripts/install.ps1)
+#
+# Environment overrides:
+#   $env:BEAM_REPO    Git URL to clone (default: https://github.com/fuegocoding/beam-agent.git)
+#   $env:BEAM_BRANCH  Git ref to check out after clone (default: whatever the clone URL implies)
+#   $env:BEAM_HOME    Install location (default: $env:USERPROFILE\.beam-agent)
+#   $env:BEAM_SKIP_UV Set to 1 to skip the bundled uv install step (assumes uv is on PATH)
+#
+[CmdletBinding()]
+param(
+    [string]$Repo,
+    [string]$Branch,
+    [string]$InstallDir,
+    [switch]$SkipUv,
+    [switch]$UseInlineUv
+)
+
 $ErrorActionPreference = "Stop"
 
-$BEAM_REPO = "https://github.com/fuegocoding/beam-agent.git"
-$BEAM_DIR = if ($env:BEAM_HOME) { $env:BEAM_HOME } else { "$env:USERPROFILE\.beam-agent" }
+# Resolve config: param > env > default.
+$BEAM_REPO = if ($Repo) { $Repo } elseif ($env:BEAM_REPO) { $env:BEAM_REPO } else { "https://github.com/fuegocoding/beam-agent.git" }
+$BEAM_BRANCH = if ($Branch) { $Branch } elseif ($env:BEAM_BRANCH) { $env:BEAM_BRANCH } else { "" }
+$BEAM_DIR = if ($InstallDir) { $InstallDir } elseif ($env:BEAM_HOME) { $env:BEAM_HOME } else { "$env:USERPROFILE\.beam-agent" }
+$BEAM_SKIP_UV = $SkipUv -or ($env:BEAM_SKIP_UV -eq "1")
 
 Write-Host "☄ Installing Beam Agent..." -ForegroundColor Cyan
+Write-Host "   repo:  $BEAM_REPO"
+if ($BEAM_BRANCH) { Write-Host "   branch: $BEAM_BRANCH" }
+Write-Host "   dir:   $BEAM_DIR"
 
-# Check for uv
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+# Install uv if missing.
+# The file-based form (irm -OutFile then & .\file.ps1) lets AMSI scan a real
+# file on disk and lets the user inspect what they're about to run. The
+# `irm | iex` stream form triggers AMSI per-tokens-in-flight and is blocked
+# by stricter Defender policies / corporate GPOs.
+if (-not $BEAM_SKIP_UV -and -not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "Installing uv..."
-    $ErrorActionPreference = "Continue"
-    irm https://astral.sh/uv/install.ps1 | iex
-    $ErrorActionPreference = "Stop"
-    $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+    $uvInstaller = Join-Path $env:TEMP "uv-install-$([guid]::NewGuid()).ps1"
+    try {
+        if ($UseInlineUv) {
+            # Backwards-compat: the historical one-liner form. Kept as an opt-in
+            # because it works on stock Win10/11 and skips a disk write, but
+            # it makes AMSI's job harder.
+            $ErrorActionPreference = "Continue"
+            irm https://astral.sh/uv/install.ps1 | iex
+            $ErrorActionPreference = "Stop"
+        } else {
+            irm https://astral.sh/uv/install.ps1 -OutFile $uvInstaller -UseBasicParsing
+            & $uvInstaller
+        }
+        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+    } finally {
+        Remove-Item -LiteralPath $uvInstaller -ErrorAction SilentlyContinue
+    }
 }
 
 # Clone or update
 if (Test-Path "$BEAM_DIR\.git") {
     Write-Host "Updating existing installation..."
     git -C $BEAM_DIR pull --quiet
+    if ($BEAM_BRANCH) {
+        git -C $BEAM_DIR checkout --quiet $BEAM_BRANCH
+    }
 } else {
     Write-Host "Cloning beam-agent..."
-    git clone --quiet $BEAM_REPO $BEAM_DIR
+    $cloneArgs = @("--quiet", $BEAM_REPO, $BEAM_DIR)
+    if ($BEAM_BRANCH) {
+        $cloneArgs = @("--quiet", "--branch", $BEAM_BRANCH) + $cloneArgs
+    }
+    git clone @cloneArgs
 }
 
 # Install
