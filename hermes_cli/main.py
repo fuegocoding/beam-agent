@@ -9613,21 +9613,31 @@ def _install_python_dependencies_with_optional_fallback(
                 _restore_quarantined_exes(moved)
             raise
 
+    # Non-editable install. The previous `-e` here wrote a __editable__*.pth
+    # finder that pinned the source path. After `uv tool install`, the
+    # package's __file__ lives at <venv>/Lib/site-packages/hermes_cli/__init__.py,
+    # so PROJECT_ROOT resolves to the venv's site-packages — the editable
+    # finder then pointed at the venv itself, and the next `beam update` would
+    # fail with "No module named 'hermes_cli'" because `uv pip install -e .`
+    # in cwd=v-env/site-packages resolved to a self-referential build. Same
+    # rationale as the install script: end users don't edit the source;
+    # `uv tool upgrade` is the supported refresh path; devs can `uv pip
+    # install -e .` themselves when they want live editing.
     try:
-        _install(["install", "-e", f".[{group}]"])
+        _install(["install", f".[{group}"])
         return
     except subprocess.CalledProcessError:
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
 
-    _install(["install", "-e", "."])
+    _install(["install", "."])
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
     for extra in _load_installable_optional_extras(group=group):
         try:
-            _install(["install", "-e", f".[{extra}]"])
+            _install(["install", f".[{extra}]"])
             installed_extras.append(extra)
         except subprocess.CalledProcessError:
             failed_extras.append(extra)
@@ -9778,7 +9788,7 @@ def _verify_core_dependencies_installed(
     # purpose — the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
-    repair_args = ["install", "--reinstall", "-e", "."]
+    repair_args = ["install", "--reinstall", "."]
     try:
         _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
     except subprocess.CalledProcessError as e:
